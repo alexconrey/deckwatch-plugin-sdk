@@ -1,11 +1,11 @@
 //! # deckwatch-plugin-sdk
 //!
-//! Shared types for [deckwatch](https://github.com/kore/deckwatch) plugins.
+//! Shared types for [deckwatch](https://github.com/alexconrey/deckwatch) plugins.
 //!
 //! A deckwatch plugin is a compiled WASM binary that deckwatch fetches from a
 //! Git repository and executes for every deployment create/update. The plugin
 //! receives a [`PluginContext`] describing the target deployment and returns a
-//! [`PluginResult`] containing env vars and sidecars to inject.
+//! [`PluginResult`] containing env vars, sidecars, and Kubernetes resources to apply.
 //!
 //! ## Minimal plugin
 //!
@@ -18,10 +18,7 @@
 //!     let mut result = PluginResult::default();
 //!
 //!     if ctx.annotations.get("myorg.io/vault").map(|v| v == "enabled").unwrap_or(false) {
-//!         result.env_vars.push(EnvVarSpec {
-//!             name: "VAULT_ADDR".into(),
-//!             value: "https://vault.myorg.internal:8200".into(),
-//!         });
+//!         result.env_vars.push(EnvVarSpec::value("VAULT_ADDR", "https://vault.myorg.internal:8200"));
 //!     }
 //!
 //!     Ok(Json(result))
@@ -35,17 +32,12 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Context passed to a plugin's [`apply`] function.
+/// Context passed to a plugin's `apply` function.
 ///
 /// Deckwatch serializes this as JSON and passes it as input to the WASM
-/// `apply` function. The plugin deserializes it using the `extism-pdk`
-/// `Json` extractor.
-///
-/// All fields are populated from the Deployment object **after** user-supplied
-/// changes are applied, so the plugin sees the final intent the operator
-/// expressed before any plugin injection happens.
-///
-/// [`apply`]: https://github.com/alexconrey/deckwatch-plugin-sdk#minimal-plugin
+/// `apply` function. All fields are populated from the Deployment object
+/// **after** user-supplied changes are applied, so the plugin sees the
+/// operator's final intent before any plugin injection happens.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginContext {
     /// Kubernetes namespace of the target deployment.
@@ -56,109 +48,151 @@ pub struct PluginContext {
 
     /// Deployment-level annotations.
     ///
-    /// Use these as the opt-in signal for your plugin. Convention is a
-    /// domain-prefixed key with `"enabled"` as the value, e.g.:
-    ///
-    /// ```yaml
-    /// metadata:
-    ///   annotations:
-    ///     myorg.io/vault: "enabled"
-    /// ```
-    ///
+    /// Use these as opt-in signals, e.g. `myorg.io/vault: "enabled"`.
     /// Keys and values are passed verbatim from the Kubernetes object.
-    /// Pod-template annotations are not included here.
     pub annotations: HashMap<String, String>,
 
     /// Pod template labels (from `spec.template.metadata.labels`).
-    ///
-    /// Useful for environment-specific behaviour — e.g. staging vs production
-    /// is often expressed via a label rather than an annotation.
     pub labels: HashMap<String, String>,
 }
 
 /// What the plugin returns from its `apply` function.
 ///
-/// Both fields default to empty. Return [`PluginResult::default()`] from
-/// `apply` to inject nothing for this deployment.
+/// All fields default to empty. Return [`PluginResult::default()`] to
+/// inject nothing for this deployment.
 ///
 /// ### Conflict resolution
 ///
-/// Deckwatch applies the following rules when merging plugin results:
-///
 /// - **Env vars**: if a variable with the same `name` already exists on the
-///   primary container (set by the operator), the plugin's value is silently
-///   skipped. User-supplied values always win.
+///   primary container, the plugin's value is silently skipped.
 /// - **Sidecars**: if a container with the same `name` already exists in the
 ///   pod spec, the plugin's sidecar is silently skipped.
+/// - **Kubernetes resources**: applied via server-side apply; conflicts are
+///   resolved by the API server using field ownership rules.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginResult {
-    /// Env vars to inject into the **primary** (first) container of the pod.
-    ///
-    /// Names are matched case-sensitively. Any name that already exists on
-    /// the container is skipped without error.
+    /// Env vars to inject into the primary (first) container.
     #[serde(default)]
     pub env_vars: Vec<EnvVarSpec>,
 
     /// Sidecar containers to append to the pod's container list.
-    ///
-    /// A container whose `name` already exists in the pod is skipped without
-    /// error. The primary container is always `containers[0]` and is never
-    /// replaced by a plugin sidecar.
     #[serde(default)]
     pub sidecars: Vec<SidecarSpec>,
+
+    /// Arbitrary Kubernetes resources to apply to the cluster via server-side
+    /// apply. Each element must be a valid Kubernetes object with `apiVersion`,
+    /// `kind`, and `metadata.name`. Resources are applied after the deployment
+    /// is committed; failures are logged but do not block the deployment.
+    ///
+    /// Use this for infrastructure CRDs that should be created alongside the
+    /// deployment — RDS instances, ExternalSecrets, snapshot schedules, etc.
+    #[serde(default)]
+    pub kubernetes_resources: Vec<serde_json::Value>,
 }
 
 /// A single environment variable to inject into the primary container.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Exactly one of `value` or `value_from` should be set. If both are set,
+/// `value_from` takes precedence.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvVarSpec {
-    /// Environment variable name. Must be a valid POSIX env var name.
+    /// Environment variable name.
     pub name: String,
 
-    /// Environment variable value. Injected as a static string literal
-    /// (`value:` in the container spec, not `valueFrom:`).
+    /// Static string value. Use [`EnvVarSpec::value`] to construct.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
+
+    /// Reference to a Kubernetes Secret or ConfigMap key. Use
+    /// [`EnvVarSpec::secret_key_ref`] or [`EnvVarSpec::config_map_key_ref`]
+    /// to construct. Takes precedence over `value` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_from: Option<EnvVarSource>,
+}
+
+impl EnvVarSpec {
+    /// Construct a static-value env var.
+    pub fn value(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { name: name.into(), value: value.into(), value_from: None }
+    }
+
+    /// Construct an env var sourced from a Kubernetes Secret key.
+    pub fn secret_key_ref(name: impl Into<String>, secret: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: String::new(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeyRef { name: secret.into(), key: key.into() }),
+                config_map_key_ref: None,
+            }),
+        }
+    }
+
+    /// Construct an env var sourced from a Kubernetes ConfigMap key.
+    pub fn config_map_key_ref(name: impl Into<String>, config_map: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: String::new(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: None,
+                config_map_key_ref: Some(ConfigMapKeyRef { name: config_map.into(), key: key.into() }),
+            }),
+        }
+    }
+}
+
+/// The source of an env var's value — a Secret or ConfigMap key reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvVarSource {
+    /// Pull the value from a Kubernetes Secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key_ref: Option<SecretKeyRef>,
+
+    /// Pull the value from a Kubernetes ConfigMap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_map_key_ref: Option<ConfigMapKeyRef>,
+}
+
+/// Reference to a specific key within a Kubernetes Secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretKeyRef {
+    /// Name of the Kubernetes Secret.
+    pub name: String,
+    /// Key within the Secret's `data` map.
+    pub key: String,
+}
+
+/// Reference to a specific key within a Kubernetes ConfigMap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMapKeyRef {
+    /// Name of the Kubernetes ConfigMap.
+    pub name: String,
+    /// Key within the ConfigMap's `data` map.
+    pub key: String,
 }
 
 /// A sidecar container to inject into the pod alongside the primary container.
-///
-/// Deckwatch translates this into a `k8s_openapi::api::core::v1::Container`
-/// and appends it to `spec.template.spec.containers`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarSpec {
-    /// Container name. Must be unique within the pod and follow Kubernetes
-    /// naming rules (lowercase alphanumeric + hyphens, max 63 chars).
-    ///
-    /// Deckwatch records injected sidecar names in the annotation
-    /// `deckwatch.plugin-sidecar/<plugin-name>` for lifecycle tracking.
+    /// Container name. Must be unique within the pod.
     pub name: String,
 
-    /// Full image reference. Include the registry and tag explicitly —
-    /// e.g. `registry.myorg.internal/mesh-agent:v2.1.0`. Avoid `latest`
-    /// in production.
+    /// Full image reference, e.g. `registry.myorg.internal/agent:v2`.
     pub image: String,
 
-    /// Environment variables to set on this sidecar container specifically.
-    /// These are distinct from the primary container's env vars.
+    /// Environment variables for the sidecar container.
     #[serde(default)]
     pub env: Vec<EnvVarSpec>,
 
-    /// Container port to declare on the sidecar. Used for service discovery
-    /// and readiness probes — does not affect network policy.
+    /// Port to expose on the sidecar.
     #[serde(default)]
     pub port: Option<i32>,
 
-    /// CPU request **and** limit (same value applied to both fields in the
-    /// Kubernetes `ResourceRequirements`). Standard quantity format:
-    /// `"50m"`, `"0.1"`, `"2"`.
-    ///
-    /// If `None`, no CPU resource constraints are set.
+    /// CPU request and limit (same value applied to both). e.g. `"50m"`.
     #[serde(default)]
     pub cpu: Option<String>,
 
-    /// Memory request **and** limit (same value applied to both fields).
-    /// Standard quantity format: `"64Mi"`, `"1Gi"`.
-    ///
-    /// If `None`, no memory resource constraints are set.
+    /// Memory request and limit (same value applied to both). e.g. `"64Mi"`.
     #[serde(default)]
     pub memory: Option<String>,
 }

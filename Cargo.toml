@@ -1,6 +1,6 @@
 [package]
 name = "deckwatch-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Shared types for deckwatch plugins — import this in your plugin crate alongside extism-pdk"
 repository = "https://github.com/alexconrey/deckwatch-plugin-sdk"
@@ -8,4 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
 serde_json = "1"
