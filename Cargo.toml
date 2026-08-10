@@ -1,6 +1,6 @@
 [package]
 name = "deckwatch-plugin-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Shared types for deckwatch plugins — import this in your plugin crate alongside extism-pdk"
 repository = "https://github.com/alexconrey/deckwatch-plugin-sdk"

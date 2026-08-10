@@ -58,7 +58,7 @@ pub struct PluginContext {
 
 /// What the plugin returns from its `apply` function.
 ///
-/// All fields default to empty. Return [`PluginResult::default()`] to
+/// All fields default to empty / None. Return [`PluginResult::default()`] to
 /// inject nothing for this deployment.
 ///
 /// ### Conflict resolution
@@ -69,6 +69,9 @@ pub struct PluginContext {
 ///   pod spec, the plugin's sidecar is silently skipped.
 /// - **Kubernetes resources**: applied via server-side apply; conflicts are
 ///   resolved by the API server using field ownership rules.
+/// - **Service account**: only applied when the pod's current
+///   `serviceAccountName` is `None` or `"default"` — user-specified accounts
+///   are never overwritten.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginResult {
     /// Env vars to inject into the primary (first) container.
@@ -85,9 +88,19 @@ pub struct PluginResult {
     /// is committed; failures are logged but do not block the deployment.
     ///
     /// Use this for infrastructure CRDs that should be created alongside the
-    /// deployment — RDS instances, ExternalSecrets, snapshot schedules, etc.
+    /// deployment — RDS instances, IAM ServiceAccounts, snapshot schedules, etc.
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
+
+    /// Kubernetes ServiceAccount name to bind to the pod template
+    /// (`spec.template.spec.serviceAccountName`). Only applied when the
+    /// current value is `None` or `"default"` — an existing non-default
+    /// service account is never overwritten by a plugin.
+    ///
+    /// Combine with a `ServiceAccount` in `kubernetes_resources` so the
+    /// account is created and bound in a single plugin invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_name: Option<String>,
 }
 
 /// A single environment variable to inject into the primary container.
@@ -195,4 +208,61 @@ pub struct SidecarSpec {
     /// Memory request and limit (same value applied to both). e.g. `"64Mi"`.
     #[serde(default)]
     pub memory: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_result_default_has_no_service_account() {
+        let r = PluginResult::default();
+        assert!(r.service_account_name.is_none());
+        assert!(r.env_vars.is_empty());
+        assert!(r.sidecars.is_empty());
+        assert!(r.kubernetes_resources.is_empty());
+    }
+
+    #[test]
+    fn service_account_name_round_trips() {
+        let r = PluginResult {
+            service_account_name: Some("my-app-rds-sa".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: PluginResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.service_account_name.as_deref(), Some("my-app-rds-sa"));
+    }
+
+    #[test]
+    fn service_account_name_none_is_omitted_from_json() {
+        let r = PluginResult::default();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("service_account_name"));
+    }
+
+    #[test]
+    fn env_var_constructors_work() {
+        let static_var = EnvVarSpec::value("FOO", "bar");
+        assert_eq!(static_var.name, "FOO");
+        assert_eq!(static_var.value, "bar");
+        assert!(static_var.value_from.is_none());
+
+        let secret_var = EnvVarSpec::secret_key_ref("DB_PASS", "my-secret", "password");
+        assert_eq!(secret_var.name, "DB_PASS");
+        assert!(secret_var.value.is_empty());
+        let vf = secret_var.value_from.as_ref().unwrap();
+        let skr = vf.secret_key_ref.as_ref().unwrap();
+        assert_eq!(skr.name, "my-secret");
+        assert_eq!(skr.key, "password");
+    }
+
+    #[test]
+    fn deserialize_missing_service_account_defaults_to_none() {
+        // Ensure older plugin WASM that don't emit service_account_name still
+        // deserialize cleanly — backwards compatibility.
+        let json = r#"{"env_vars":[],"sidecars":[],"kubernetes_resources":[]}"#;
+        let r: PluginResult = serde_json::from_str(json).unwrap();
+        assert!(r.service_account_name.is_none());
+    }
 }
