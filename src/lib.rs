@@ -32,6 +32,46 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Static metadata returned by the `metadata()` export.
+///
+/// Deckwatch calls this once at plugin load time to build the dependency graph
+/// and sort plugins before any `apply()` calls happen. Operators never need to
+/// think about ordering — deckwatch resolves it automatically.
+///
+/// # Capability IDs
+///
+/// Well-known IDs for the AWS plugin ecosystem:
+/// - `"aws:iam-role"` — an IAM role has been created for this workload
+/// - `"aws:service-account"` — a ServiceAccount with IRSA annotation exists
+/// - `"aws:rds-connection"` — an RDS instance has been provisioned
+/// - `"aws:s3-bucket"` — an S3 bucket has been provisioned
+///
+/// Use namespaced IDs (`"domain:capability"`) to avoid collisions with
+/// third-party plugins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginMetadata {
+    /// Plugin display name (for logs and UI).
+    pub name: String,
+    /// Plugin version string (e.g. from `env!("CARGO_PKG_VERSION")`).
+    #[serde(default)]
+    pub version: String,
+    /// Human-readable description.
+    #[serde(default)]
+    pub description: String,
+    /// Capability IDs this plugin produces, available to downstream plugins
+    /// via `ctx.plugin_outputs["<plugin-name>"]`.
+    #[serde(default)]
+    pub provides: Vec<String>,
+    /// Capabilities that **must** be present — deckwatch skips this plugin
+    /// with an error if none of the loaded plugins provides them.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Capabilities that improve behaviour if present but are not required —
+    /// the plugin runs in reduced-functionality mode if unmet.
+    #[serde(default)]
+    pub optional_depends_on: Vec<String>,
+}
+
 /// Context passed to a plugin's `apply` function.
 ///
 /// Deckwatch serializes this as JSON and passes it as input to the WASM
@@ -54,6 +94,21 @@ pub struct PluginContext {
 
     /// Pod template labels (from `spec.template.metadata.labels`).
     pub labels: HashMap<String, String>,
+
+    /// Outputs from plugins that have already run this invocation, keyed by
+    /// plugin **name** (the `name` field from `PluginMetadata`, which is also
+    /// the `name` field in `PluginConfig`).
+    ///
+    /// Example — reading the IAM role ARN produced by `deckwatch-plugin-aws`:
+    /// ```rust,ignore
+    /// if let Some(aws_out) = ctx.plugin_outputs.get("aws") {
+    ///     if let Some(role_arn) = aws_out.get("role_arn") {
+    ///         // use role_arn
+    ///     }
+    /// }
+    /// ```
+    #[serde(default)]
+    pub plugin_outputs: HashMap<String, HashMap<String, String>>,
 }
 
 /// What the plugin returns from its `apply` function.
@@ -91,6 +146,17 @@ pub struct PluginResult {
     /// deployment — RDS instances, IAM ServiceAccounts, snapshot schedules, etc.
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
+
+    /// Key-value data this plugin shares with plugins that run after it.
+    /// Downstream plugins read these via `ctx.plugin_outputs["<this-plugin-name>"]`.
+    ///
+    /// Common outputs from the AWS plugin:
+    /// - `"role_arn"` — the IAM role ARN created for this workload
+    /// - `"service_account_name"` — the ServiceAccount name
+    /// - `"rds_endpoint"` — the RDS instance endpoint (once available)
+    /// - `"s3_bucket"` — the full bucket name (with prefix applied)
+    #[serde(default)]
+    pub outputs: HashMap<String, String>,
 
     /// Kubernetes ServiceAccount name to bind to the pod template
     /// (`spec.template.spec.serviceAccountName`). Only applied when the
@@ -255,6 +321,51 @@ mod tests {
         let skr = vf.secret_key_ref.as_ref().unwrap();
         assert_eq!(skr.name, "my-secret");
         assert_eq!(skr.key, "password");
+    }
+
+    #[test]
+    fn plugin_metadata_defaults_are_empty() {
+        let m = PluginMetadata::default();
+        assert!(m.provides.is_empty());
+        assert!(m.depends_on.is_empty());
+        assert!(m.optional_depends_on.is_empty());
+    }
+
+    #[test]
+    fn outputs_round_trip() {
+        let mut r = PluginResult::default();
+        r.outputs.insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
+        let json = serde_json::to_string(&r).unwrap();
+        let back: PluginResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.outputs.get("role_arn").unwrap(), "arn:aws:iam::123:role/app");
+    }
+
+    #[test]
+    fn plugin_outputs_in_context_round_trip() {
+        let mut ctx = PluginContext {
+            namespace: "ns".into(),
+            deployment_name: "app".into(),
+            annotations: HashMap::new(),
+            labels: HashMap::new(),
+            plugin_outputs: HashMap::new(),
+        };
+        let mut aws_out = HashMap::new();
+        aws_out.insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
+        ctx.plugin_outputs.insert("aws".into(), aws_out);
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let back: PluginContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.plugin_outputs["aws"]["role_arn"],
+            "arn:aws:iam::123:role/app"
+        );
+    }
+
+    #[test]
+    fn plugin_context_missing_plugin_outputs_defaults_to_empty() {
+        let json = r#"{"namespace":"ns","deployment_name":"app","annotations":{},"labels":{}}"#;
+        let ctx: PluginContext = serde_json::from_str(json).unwrap();
+        assert!(ctx.plugin_outputs.is_empty());
     }
 
     #[test]
