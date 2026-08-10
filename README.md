@@ -127,12 +127,14 @@ Passed as JSON to your `apply` function. Contains everything needed to decide wh
 
 ### `PluginResult`
 
-Returned from your `apply` function. Both fields default to empty — return `PluginResult::default()` to inject nothing.
+Returned from your `apply` function. All fields default to empty/None — return `PluginResult::default()` to inject nothing.
 
 | Field | Type | Description |
 |---|---|---|
 | `env_vars` | `Vec<EnvVarSpec>` | Env vars to inject into the primary container |
 | `sidecars` | `Vec<SidecarSpec>` | Sidecar containers to append to the pod spec |
+| `kubernetes_resources` | `Vec<serde_json::Value>` | Arbitrary K8s resources applied via server-side apply after the deployment is committed |
+| `service_account_name` | `Option<String>` | ServiceAccount to bind to the pod template. Only applied when the pod's current SA is `None` or `"default"`. Combine with a `ServiceAccount` in `kubernetes_resources` to create and bind in one shot (e.g. for IRSA/IAM auth). |
 
 ### `EnvVarSpec`
 
