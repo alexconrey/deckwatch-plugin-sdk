@@ -32,6 +32,28 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+// ── Host functions ────────────────────────────────────────────────────────────
+
+/// Returns the current UTC time as a Unix timestamp (seconds since epoch).
+///
+/// Provided by deckwatch as a host function (`extism:host/user::now`). Call
+/// this instead of `std::time::SystemTime::now()` — the latter panics in
+/// `wasm32-unknown-unknown` because the extism WASM sandbox has no system clock.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let secs = deckwatch_plugin_sdk::now();
+/// ```
+#[cfg(target_arch = "wasm32")]
+pub fn now() -> u64 {
+    #[link(wasm_import_module = "extism:host/user")]
+    unsafe extern "C" {
+        fn now() -> i64;
+    }
+    unsafe { now() as u64 }
+}
+
 /// The data type of a plugin configuration field.
 ///
 /// Used by the deckwatch UI to render the appropriate form control for each
