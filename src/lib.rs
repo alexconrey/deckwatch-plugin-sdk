@@ -232,6 +232,19 @@ pub struct PluginResult {
     /// account is created and bound in a single plugin invocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_name: Option<String>,
+
+    /// Non-fatal errors and warnings the plugin wants deckwatch to surface
+    /// in its own structured logs.
+    ///
+    /// Use this instead of `extism_pdk::log!()` — extism's log pipe cannot
+    /// be bridged into deckwatch's tracing subscriber without a global
+    /// callback conflict. Errors listed here are logged at `ERROR` level by
+    /// deckwatch after `apply()` returns; the deployment is not blocked.
+    ///
+    /// Plugin authors should use this for any recoverable failure that an
+    /// operator needs to see: IAM errors, RDS provisioning failures, etc.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 /// A single environment variable to inject into the primary container.
@@ -476,10 +489,34 @@ mod tests {
 
     #[test]
     fn deserialize_missing_service_account_defaults_to_none() {
-        // Ensure older plugin WASM that don't emit service_account_name still
-        // deserialize cleanly — backwards compatibility.
         let json = r#"{"env_vars":[],"sidecars":[],"kubernetes_resources":[]}"#;
         let r: PluginResult = serde_json::from_str(json).unwrap();
         assert!(r.service_account_name.is_none());
+    }
+
+    #[test]
+    fn errors_absent_in_older_payload_deserializes_to_empty_vec() {
+        // Deckwatch must handle plugin WASM built against an older SDK that
+        // does not emit the `errors` field — deserialize to empty vec.
+        let json = r#"{"env_vars":[],"sidecars":[],"kubernetes_resources":[]}"#;
+        let r: PluginResult = serde_json::from_str(json).unwrap();
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn errors_omitted_from_json_when_empty() {
+        let r = PluginResult::default();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("errors"), "empty errors should be skipped in JSON");
+    }
+
+    #[test]
+    fn errors_round_trip() {
+        let mut r = PluginResult::default();
+        r.errors.push("ensure_role failed: AccessDenied".into());
+        let json = serde_json::to_string(&r).unwrap();
+        let back: PluginResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.errors.len(), 1);
+        assert!(back.errors[0].contains("AccessDenied"));
     }
 }
