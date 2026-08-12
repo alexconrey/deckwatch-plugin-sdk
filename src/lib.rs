@@ -32,6 +32,65 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The data type of a plugin configuration field.
+///
+/// Used by the deckwatch UI to render the appropriate form control for each
+/// field in a plugin's `config_schema`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigFieldType {
+    /// Plain text input. Stored in plugin config as-is.
+    String,
+    /// Masked text input. Stored encrypted in `PluginConfig.config` using the
+    /// same AES-256-GCM envelope as `DeckwatchSettings.credentials`.
+    Secret,
+    /// Checkbox. Stored as `"true"` or `"false"`.
+    Bool,
+    /// Dropdown. The field must have a non-empty `options` list.
+    Select,
+}
+
+impl Default for ConfigFieldType {
+    fn default() -> Self {
+        Self::String
+    }
+}
+
+/// A single field in a plugin's self-declared configuration schema.
+///
+/// Plugins export a `metadata()` function that returns a [`PluginMetadata`]
+/// containing a `config_schema` vec. Deckwatch reads this at load time and
+/// renders a dynamic settings form — no hardcoded knowledge of any specific
+/// plugin is required in the deckwatch core.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConfigField {
+    /// Machine-readable key. Must be a valid extism config key (alphanumeric + `_`).
+    /// Matched against keys in `PluginConfig.config` and `inherit_env_keys`.
+    pub key: String,
+    /// Human-readable label for the settings form.
+    pub label: String,
+    /// Help text rendered below the field.
+    #[serde(default)]
+    pub description: String,
+    /// The type of form control to render.
+    pub field_type: ConfigFieldType,
+    /// Default value rendered in the form when no saved value exists.
+    /// For `secret` fields this is typically `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Whether the field must be non-empty before deckwatch accepts settings.
+    #[serde(default)]
+    pub required: bool,
+    /// Allowed values for `select` fields. Ignored for other field types.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// When `Some`, this field is populated from an environment variable rather
+    /// than direct user input. The value is the env var name. The UI renders
+    /// the field as read-only with a badge showing the source name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_source: Option<String>,
+}
+
 /// Static metadata returned by the `metadata()` export.
 ///
 /// Deckwatch calls this once at plugin load time to build the dependency graph
@@ -70,6 +129,12 @@ pub struct PluginMetadata {
     /// the plugin runs in reduced-functionality mode if unmet.
     #[serde(default)]
     pub optional_depends_on: Vec<String>,
+    /// Schema for this plugin's operator-supplied configuration.
+    ///
+    /// Deckwatch reads this at load time and renders a dynamic settings form.
+    /// Old plugins that do not export this field deserialize to an empty `Vec`.
+    #[serde(default)]
+    pub config_schema: Vec<ConfigField>,
 }
 
 /// Context passed to a plugin's `apply` function.
@@ -329,6 +394,47 @@ mod tests {
         assert!(m.provides.is_empty());
         assert!(m.depends_on.is_empty());
         assert!(m.optional_depends_on.is_empty());
+        assert!(m.config_schema.is_empty());
+    }
+
+    #[test]
+    fn config_field_type_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ConfigFieldType::Secret).unwrap(),
+            "\"secret\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ConfigFieldType::Select).unwrap(),
+            "\"select\""
+        );
+    }
+
+    #[test]
+    fn config_schema_round_trips() {
+        let field = ConfigField {
+            key: "AWS_REGION".into(),
+            label: "AWS Region".into(),
+            description: "The AWS region to use".into(),
+            field_type: ConfigFieldType::String,
+            default: Some("us-east-1".into()),
+            required: true,
+            options: vec![],
+            env_source: Some("AWS_REGION".into()),
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: ConfigField = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.key, "AWS_REGION");
+        assert_eq!(back.field_type, ConfigFieldType::String);
+        assert_eq!(back.default.as_deref(), Some("us-east-1"));
+        assert!(back.required);
+    }
+
+    #[test]
+    fn plugin_metadata_missing_config_schema_defaults_to_empty() {
+        // Simulate an old plugin binary that does not include config_schema.
+        let json = r#"{"name":"old-plugin","version":"0.1.0","description":"","provides":[],"depends_on":[],"optional_depends_on":[]}"#;
+        let m: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert!(m.config_schema.is_empty());
     }
 
     #[test]
