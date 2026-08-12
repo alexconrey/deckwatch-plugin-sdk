@@ -135,6 +135,80 @@ pub struct PluginMetadata {
     /// Old plugins that do not export this field deserialize to an empty `Vec`.
     #[serde(default)]
     pub config_schema: Vec<ConfigField>,
+    /// Infrastructure resources this plugin can provision on behalf of an
+    /// application (e.g. RDS databases, S3 buckets). Each entry renders as
+    /// a card on the Application detail page with a provisioning form.
+    ///
+    /// Old plugins that do not export this field deserialize to an empty `Vec`.
+    #[serde(default)]
+    pub resources: Vec<PluginResource>,
+}
+
+/// A provisionable infrastructure resource declared by a plugin.
+///
+/// Plugins include these in [`PluginMetadata::resources`] to describe the
+/// infrastructure they can create on behalf of an application. Deckwatch
+/// renders a card per resource on the Application detail page.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginResource {
+    /// Machine-readable identifier, unique within this plugin. e.g. `"rds"`, `"s3"`.
+    pub id: String,
+    /// Button/tab label shown in the deckwatch UI. e.g. `"RDS Database"`.
+    pub label: String,
+    /// Optional MDI icon name. e.g. `"mdi-database"`.
+    #[serde(default)]
+    pub icon: String,
+    /// Human-readable description shown in the provisioning dialog.
+    #[serde(default)]
+    pub description: String,
+    /// If true, only one instance of this resource may exist per application.
+    /// The "+" button is hidden once provisioned.
+    #[serde(default)]
+    pub singleton: bool,
+    /// Form fields the operator fills out when provisioning.
+    /// Reuses [`ConfigField`] — same type/label/required/default semantics.
+    #[serde(default)]
+    pub fields: Vec<ConfigField>,
+    /// Env var keys this resource will emit into application state once provisioned.
+    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`.
+    /// Deckwatch uses this to display a "provides these env vars" preview in the UI.
+    #[serde(default)]
+    pub output_keys: Vec<String>,
+}
+
+/// Request sent to the plugin's `provision()` WASM export.
+///
+/// Built by deckwatch when an operator clicks "Add {resource.label}" and
+/// submits the provisioning form on the Application detail page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceProvisionRequest {
+    /// Name of the application being provisioned for.
+    pub application_name: String,
+    /// Kubernetes namespace the application lives in.
+    pub namespace: String,
+    /// Plugin-declared resource type id (matches [`PluginResource::id`]).
+    pub resource_id: String,
+    /// User-submitted form values, keyed by [`ConfigField::key`].
+    pub fields: HashMap<String, String>,
+}
+
+/// Result returned from the plugin's `provision()` WASM export.
+///
+/// Deckwatch persists `state` to the `application_plugin_resources` table
+/// and injects its key-value pairs as env vars into all deployments and
+/// cronjobs in the application on the next reconcile cycle.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResourceProvisionResult {
+    /// Persisted at application level. Keys become env vars injected into
+    /// all deployments and cronjobs in the application.
+    #[serde(default)]
+    pub state: HashMap<String, String>,
+    /// Any Kubernetes resources to apply (e.g. a ServiceAccount with IRSA annotation).
+    #[serde(default)]
+    pub kubernetes_resources: Vec<serde_json::Value>,
+    /// Errors to surface in deckwatch logs and UI.
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 /// Context passed to a plugin's `apply` function.
@@ -448,6 +522,68 @@ mod tests {
         let json = r#"{"name":"old-plugin","version":"0.1.0","description":"","provides":[],"depends_on":[],"optional_depends_on":[]}"#;
         let m: PluginMetadata = serde_json::from_str(json).unwrap();
         assert!(m.config_schema.is_empty());
+    }
+
+    #[test]
+    fn plugin_metadata_missing_resources_defaults_to_empty_vec() {
+        // Old plugin binary without resources field must still deserialize cleanly.
+        let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[],"config_schema":[]}"#;
+        let m: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert!(m.resources.is_empty(), "resources should default to [] when absent");
+    }
+
+    #[test]
+    fn resource_provision_result_missing_errors_defaults_to_empty_vec() {
+        // Plugins that return state but no errors field must deserialize cleanly.
+        let json = r#"{"state":{"DB_HOST":"mydb.us-east-1.rds.amazonaws.com"},"kubernetes_resources":[]}"#;
+        let r: ResourceProvisionResult = serde_json::from_str(json).unwrap();
+        assert!(r.errors.is_empty(), "errors should default to [] when absent");
+        assert_eq!(r.state.get("DB_HOST").map(String::as_str), Some("mydb.us-east-1.rds.amazonaws.com"));
+    }
+
+    #[test]
+    fn plugin_resource_round_trips() {
+        let resource = PluginResource {
+            id: "rds".into(),
+            label: "RDS Database".into(),
+            icon: "mdi-database".into(),
+            description: "Provision an Amazon RDS instance".into(),
+            singleton: true,
+            fields: vec![ConfigField {
+                key: "db_name".into(),
+                label: "Database Name".into(),
+                description: "Name for the initial database".into(),
+                field_type: ConfigFieldType::String,
+                default: Some("app".into()),
+                required: true,
+                options: vec![],
+                env_source: None,
+            }],
+            output_keys: vec!["DB_HOST".into(), "DB_PORT".into()],
+        };
+        let json = serde_json::to_string(&resource).unwrap();
+        let back: PluginResource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "rds");
+        assert_eq!(back.singleton, true);
+        assert_eq!(back.output_keys, vec!["DB_HOST", "DB_PORT"]);
+        assert_eq!(back.fields[0].key, "db_name");
+    }
+
+    #[test]
+    fn resource_provision_request_round_trips() {
+        let mut fields = HashMap::new();
+        fields.insert("db_name".into(), "myapp".into());
+        let req = ResourceProvisionRequest {
+            application_name: "myapp".into(),
+            namespace: "production".into(),
+            resource_id: "rds".into(),
+            fields,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: ResourceProvisionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.application_name, "myapp");
+        assert_eq!(back.resource_id, "rds");
+        assert_eq!(back.fields.get("db_name").map(String::as_str), Some("myapp"));
     }
 
     #[test]
