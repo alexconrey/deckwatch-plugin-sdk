@@ -225,6 +225,17 @@ pub struct ResourceProvisionResult {
     /// all deployments and cronjobs in the application.
     #[serde(default)]
     pub state: HashMap<String, String>,
+    /// Annotations to stamp on every deployment in the application.
+    ///
+    /// Keys should be namespaced (e.g. `"deckwatch.io/aws-s3-bucket"`).
+    /// Deckwatch persists these alongside `state` and patches
+    /// `metadata.annotations` on all application deployments during the
+    /// next reconciler cycle — making provisioned resources visible via
+    /// `kubectl get deployment -o yaml` without querying the deckwatch DB.
+    ///
+    /// Old plugins that do not emit this field deserialize to an empty map.
+    #[serde(default)]
+    pub deployment_annotations: HashMap<String, String>,
     /// Any Kubernetes resources to apply (e.g. a ServiceAccount with IRSA annotation).
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
