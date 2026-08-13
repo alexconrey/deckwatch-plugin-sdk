@@ -236,6 +236,20 @@ pub struct ResourceProvisionResult {
     /// Old plugins that do not emit this field deserialize to an empty map.
     #[serde(default)]
     pub deployment_annotations: HashMap<String, String>,
+    /// Sidecar containers to inject into every deployment in the application.
+    ///
+    /// Deckwatch persists these alongside `state` and patches
+    /// `spec.template.spec.containers` on all application deployments during
+    /// the next reconciler cycle. The container `name` field is used as the
+    /// key for server-side apply — adding the same sidecar twice is idempotent,
+    /// and removing the resource causes the sidecar to be removed on the next
+    /// reconcile.
+    ///
+    /// Use this to inject process sidecars (Redis, PostgreSQL, Fluent Bit, etc.)
+    /// that should run alongside every workload in the application.
+    /// Old plugins that do not emit this field deserialize to an empty vec.
+    #[serde(default)]
+    pub sidecars: Vec<SidecarSpec>,
     /// Any Kubernetes resources to apply (e.g. a ServiceAccount with IRSA annotation).
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
