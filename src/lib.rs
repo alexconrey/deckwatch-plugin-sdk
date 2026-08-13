@@ -244,6 +244,39 @@ pub struct ResourceProvisionResult {
     pub errors: Vec<String>,
 }
 
+/// Input to a plugin's `deprovision()` WASM export.
+///
+/// Deckwatch calls this before removing the resource record from the DB,
+/// passing the persisted state and original form fields so the plugin knows
+/// what to clean up. The plugin decides whether to actually delete the cloud
+/// resource — for S3 buckets with data this is typically a no-op with a warning;
+/// for RDS the plugin can take a final snapshot then delete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceDeprovisionRequest {
+    pub application_name: String,
+    pub namespace: String,
+    pub resource_id: String,
+    /// The state map persisted when the resource was provisioned
+    /// (e.g. `{"S3_BUCKET": "myorg-uploads", "DB_HOST": "..."}`).
+    #[serde(default)]
+    pub state: HashMap<String, String>,
+    /// The original operator-submitted form values.
+    #[serde(default)]
+    pub fields: HashMap<String, String>,
+}
+
+/// What the plugin returns from its `deprovision()` export.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResourceDeprovisionResult {
+    /// Errors to surface in deckwatch logs and UI. Does not block DB record removal.
+    #[serde(default)]
+    pub errors: Vec<String>,
+    /// Human-readable message shown to the operator in the UI after deprovisioning.
+    /// Use this to communicate what was and was not cleaned up.
+    #[serde(default)]
+    pub message: String,
+}
+
 /// Context passed to a plugin's `apply` function.
 ///
 /// Deckwatch serializes this as JSON and passes it as input to the WASM
