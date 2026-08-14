@@ -153,6 +153,35 @@ pub struct ConfigField {
     pub env_source: Option<String>,
 }
 
+/// A field that an operator fills in to tune MCP guidance for a specific plugin.
+///
+/// Plugins declare these in [`PluginMetadata::mcp_tuning_fields`] to describe
+/// org-specific conventions (naming schemes, preferred instance classes, etc.)
+/// that the AI agent should follow. Deckwatch reads the saved values at MCP
+/// `initialize` time and prepends them to the session instructions as:
+///
+/// ```text
+/// [Plugin: AWS]
+/// RDS Naming Convention: k2-{namespace}-{app}
+/// S3 Bucket Prefix: k2-
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpTuningField {
+    /// Machine-readable key (alphanumeric + `_`). Used as the map key in
+    /// `PluginConfig.mcp_tuning` when an admin saves a value in Settings.
+    pub key: String,
+    /// Human-readable label for the MCP Tuning settings form.
+    pub label: String,
+    /// Help text rendered below the field in the settings form.
+    pub description: String,
+    /// Example value shown as the input placeholder when no value is saved.
+    #[serde(default)]
+    pub placeholder: String,
+    /// Default value pre-filled in the form. `None` means no pre-fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
 /// Static metadata returned by the `metadata()` export.
 ///
 /// Deckwatch calls this once at plugin load time to build the dependency graph
@@ -204,6 +233,16 @@ pub struct PluginMetadata {
     /// Old plugins that do not export this field deserialize to an empty `Vec`.
     #[serde(default)]
     pub resources: Vec<PluginResource>,
+    /// Operator-facing fields for MCP-level guidance tuning.
+    ///
+    /// Deckwatch reads these at load time to render a "Plugin MCP Tuning"
+    /// subsection in Settings. Admin-saved values are injected into every MCP
+    /// `initialize` response as a `[Plugin: {name}]` block so the AI agent
+    /// always sees current naming conventions and org constraints.
+    ///
+    /// Old plugins that do not export this field deserialize to an empty `Vec`.
+    #[serde(default)]
+    pub mcp_tuning_fields: Vec<McpTuningField>,
 }
 
 /// A provisionable infrastructure resource declared by a plugin.
@@ -729,6 +768,33 @@ mod tests {
         let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[],"config_schema":[]}"#;
         let m: PluginMetadata = serde_json::from_str(json).unwrap();
         assert!(m.resources.is_empty(), "resources should default to [] when absent");
+    }
+
+    #[test]
+    fn plugin_metadata_missing_mcp_tuning_fields_defaults_to_empty() {
+        // Old plugin binary without mcp_tuning_fields must still deserialize cleanly.
+        let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[]}"#;
+        let m: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert!(
+            m.mcp_tuning_fields.is_empty(),
+            "mcp_tuning_fields should default to [] when absent"
+        );
+    }
+
+    #[test]
+    fn mcp_tuning_field_round_trips() {
+        let field = McpTuningField {
+            key: "rds_naming_convention".into(),
+            label: "RDS Naming Convention".into(),
+            description: "Convention for naming RDS instances.".into(),
+            placeholder: "k2-{namespace}-{app}".into(),
+            default: Some("k2-{namespace}-{app}".into()),
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: McpTuningField = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.key, "rds_naming_convention");
+        assert_eq!(back.placeholder, "k2-{namespace}-{app}");
+        assert_eq!(back.default.as_deref(), Some("k2-{namespace}-{app}"));
     }
 
     #[test]
