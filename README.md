@@ -243,10 +243,11 @@ Returned by `metadata()`. Derives `Default`.
 | `config_schema` | `Vec<ConfigField>` | default | Settings form fields for this plugin's `config` |
 | `resources` | `Vec<PluginResource>` | default | Infrastructure this plugin can provision. Each one renders as a card on the Application page |
 | `mcp_tuning_fields` | `Vec<McpTuningField>` | default | Operator-tunable MCP guidance fields |
+| `min_deckwatch_version` | `Option<String>` | default, omitted when `None` | *0.10.0.* Minimum deckwatch version, e.g. `"0.7.0"`. Checked once at load time; an older host skips the plugin and logs an error. Only integer parts are compared, so don't add a `v` prefix (`"v0.7.0"` reads as 7.0.0) |
 
 - Ordering uses Kahn's algorithm over `provides`, `depends_on` and `optional_depends_on`. Plugins with no edges keep their configured order. If two plugins provide the same capability, the later one in the configured order is the provider. A cycle is logged and its members run in their configured order.
 - Use namespaced capability IDs (`"domain:capability"`). The AWS plugin family uses `"aws:iam-role"`, `"aws:service-account"`, `"aws:rds-connection"` and `"aws:s3-bucket"`.
-- deckwatch's copy also has `min_deckwatch_version` (an optional minimum host version; the host skips plugins that need a newer deckwatch). It is not in the SDK yet ([#11](https://github.com/alexconrey/deckwatch-plugin-sdk/pull/11)).
+- `min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which deckwatch doesn't bump between releases: unreleased `main` at `fc03ec2` still reports 0.6.7. Both the v0.6.7 release and `main` enforce it.
 
 ### `ConfigField`
 

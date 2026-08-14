@@ -115,7 +115,13 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
     let mut put = |name: &str, set: BTreeSet<String>| {
         m.insert(name.to_string(), set);
     };
-    put("PluginMetadata", keys(&PluginMetadata::default()));
+    put(
+        "PluginMetadata",
+        keys(&PluginMetadata {
+            min_deckwatch_version: Some("0.7.0".into()),
+            ..Default::default()
+        }),
+    );
     put(
         "ConfigField",
         keys(&ConfigField {

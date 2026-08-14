@@ -36,7 +36,7 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | SDK item | Purpose | deckwatch `src/plugins.rs` |
 |---|---|---|
 | `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | host side, not a type |
-| `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields | `:300` (**ahead**: `min_deckwatch_version`) |
+| `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields, `min_deckwatch_version` | `:300` |
 | `ConfigField`, `ConfigFieldType` | Plugin config schema entries | `:253`, `:236` |
 | `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch has its own `validate_key_value_field` (`278de71`); `KeyValue`/`Unknown` landed in deckwatch `main` before this SDK (rule 2 reversed) |
 | `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:281` |
@@ -67,7 +67,7 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
 8. **MSRV is 1.82** (`rust-version`). `now()` uses an `unsafe extern "C"` block: 1.81 rejects it, but only on the wasm32 build (host tests pass on 1.81), so the MSRV job must build wasm32. Raising the MSRV is a minor bump.
 9. **Keep the doc comment saying "Mirrors `deckwatch::plugins::…`"** on mirrored types, and update the table above when you add or change one.
 10. **Documentation is pedantic, and it changes in the same PR as the code.** This is an SDK; plugin authors build against the docs.
-    - Every public type, field and variant appears in the README type reference. `tests/readme.rs` enforces this: a new type also needs an entry in that test's `actual()`.
+    - Every public type, field and variant appears in the README type reference. `tests/readme.rs` enforces this: a new type also needs an entry in that test's `actual()`. A new field with `skip_serializing_if` must also be **populated** in `actual()`, or it never appears in the JSON and the test can't see it.
     - State the JSON contract exactly: required, default, or omitted when empty.
     - Describe deckwatch's **actual** behaviour, verified in deckwatch's code, and name the deckwatch **commit** it was checked against. deckwatch doesn't bump its `Cargo.toml` version between releases, so in 2026-11 the README said "deckwatch 0.6.7" for behaviour from unreleased `main`, while the real v0.6.7 release was 100 commits older and still leaked deckwatch's encryption key to plugins. When release and `main` differ in a way plugins see, list the differences. In 2026-11, the README and rustdoc said deprovision `message` was shown in the UI, `ProvisioningStatus` drove re-polling, and `deployment_annotations` were applied on every apply. None of that was true.
     - Where the host contradicts its own types or docs, list it under "Known host issues" rather than documenting the intent.

@@ -295,6 +295,18 @@ pub struct PluginMetadata {
     /// Old plugins that do not export this field deserialize to an empty `Vec`.
     #[serde(default)]
     pub mcp_tuning_fields: Vec<McpTuningField>,
+    /// Minimum deckwatch version this plugin needs, e.g. `"0.7.0"`.
+    ///
+    /// Deckwatch checks it once, at load time, and skips the plugin with an
+    /// error log when it is older. The comparison splits both versions on
+    /// `.`, keeps only the parts that parse as integers, and compares the
+    /// first three (missing parts count as 0). So don't add a `v` prefix:
+    /// `"v0.7.0"` parses as 7.0.0. Pre-release suffixes such as `-beta` are
+    /// dropped with the part they're attached to. `None` means no constraint.
+    ///
+    /// Mirrors `deckwatch::plugins::PluginMetadata::min_deckwatch_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_deckwatch_version: Option<String>,
 }
 
 /// A provisionable infrastructure resource declared by a plugin.
@@ -1013,6 +1025,43 @@ mod tests {
         assert_eq!(back.key, "rds_naming_convention");
         assert_eq!(back.placeholder, "k2-{namespace}-{app}");
         assert_eq!(back.default.as_deref(), Some("k2-{namespace}-{app}"));
+    }
+
+    #[test]
+    fn min_deckwatch_version_round_trips() {
+        let m = PluginMetadata {
+            name: "my-plugin".into(),
+            min_deckwatch_version: Some("0.7.0".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            json.contains("min_deckwatch_version"),
+            "field must be present when Some"
+        );
+        let back: PluginMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.min_deckwatch_version.as_deref(), Some("0.7.0"));
+    }
+
+    #[test]
+    fn min_deckwatch_version_none_is_omitted_from_json() {
+        let m = PluginMetadata::default();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("min_deckwatch_version"),
+            "field must be absent when None"
+        );
+    }
+
+    #[test]
+    fn min_deckwatch_version_missing_from_old_plugin_defaults_to_none() {
+        // Old plugin WASM that predates this field must still deserialize cleanly.
+        let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[]}"#;
+        let m: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert!(
+            m.min_deckwatch_version.is_none(),
+            "min_deckwatch_version should default to None when absent"
+        );
     }
 
     #[test]
