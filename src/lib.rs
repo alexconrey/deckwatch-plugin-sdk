@@ -54,6 +54,46 @@ pub fn now() -> u64 {
     unsafe { now() as u64 }
 }
 
+/// Structured ServiceAccount request returned from a plugin's `apply()` export.
+///
+/// Preferred over including a raw `ServiceAccount` manifest in
+/// `kubernetes_resources` — deckwatch handles create-or-patch with retry
+/// semantics and surfaces the result in the UI and audit log.
+///
+/// Mirrors `deckwatch::plugins::WantsServiceAccount` — kept in sync manually.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WantsServiceAccount {
+    /// Name of the Kubernetes ServiceAccount to create or patch.
+    pub name: String,
+    /// IRSA role ARN stamped on the `eks.amazonaws.com/role-arn` annotation.
+    /// Leave empty for a plain ServiceAccount with no IAM binding.
+    #[serde(default)]
+    pub irsa_role_arn: String,
+}
+
+/// Provisioning lifecycle status of a plugin-managed infrastructure resource.
+///
+/// Returned by the plugin's `provision()` export to signal whether the resource
+/// is ready, still being created, or has failed. Deckwatch uses this to drive
+/// the polling loop in `reconcile_pending_resources`:
+///
+/// - `Pending`   → re-poll next cycle (respecting `retry_after_secs`)
+/// - `Available` → resource is fully provisioned; stop polling
+/// - `Failed`    → surface in the UI and stop polling
+///
+/// Old plugins that do not emit this field default to `Pending` so the
+/// existing magic-string heuristics (`is_pending`) continue to work.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum ProvisioningStatus {
+    /// Resource creation is still in progress.
+    #[default]
+    Pending,
+    /// Resource is fully provisioned and available.
+    Available,
+    /// Resource provisioning failed — check `errors` for details.
+    Failed,
+}
+
 /// The data type of a plugin configuration field.
 ///
 /// Used by the deckwatch UI to render the appropriate form control for each
@@ -256,6 +296,30 @@ pub struct ResourceProvisionResult {
     /// Errors to surface in deckwatch logs and UI.
     #[serde(default)]
     pub errors: Vec<String>,
+    /// Non-fatal warnings to surface in deckwatch logs.
+    ///
+    /// Logged at `WARN` level after `provision()` returns. Use this for
+    /// conditions that are not fatal but worth operator attention (e.g. a
+    /// resource was created but a non-critical tag is missing).
+    /// Old plugins deserialize to an empty vec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Provisioning lifecycle status.
+    ///
+    /// `Pending` means the resource is still being created and deckwatch
+    /// should re-poll. `Available` means fully provisioned. `Failed` surfaces
+    /// the failure in the UI. Old plugins that do not emit this field
+    /// deserialize to `Pending` (the existing retry behaviour is preserved).
+    #[serde(default)]
+    pub status: ProvisioningStatus,
+    /// Minimum seconds to wait before deckwatch re-polls this resource.
+    ///
+    /// Plugins should return this for long-running provisioning operations
+    /// (e.g. RDS creation takes several minutes). Deckwatch skips re-polling
+    /// the resource until `updated_at + retry_after_secs > now`.
+    /// `None` means poll every cycle (the existing behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 /// Input to a plugin's `deprovision()` WASM export.
@@ -328,6 +392,28 @@ pub struct PluginContext {
     /// ```
     #[serde(default)]
     pub plugin_outputs: HashMap<String, HashMap<String, String>>,
+
+    /// Provisioned infrastructure resources for this application, keyed by
+    /// `"{plugin_name}/{resource_id}"`. Each value is the state map that was
+    /// persisted when the resource was provisioned (e.g.
+    /// `{"DB_HOST": "mydb.us-east-1.rds.amazonaws.com", "DB_PORT": "5432"}`).
+    ///
+    /// Plugins read this to avoid redundant cloud API calls on every reconcile
+    /// cycle. If `DB_HOST` is already present here the plugin can skip the RDS
+    /// `DescribeDBInstances` call and return the cached value directly.
+    ///
+    /// Example:
+    /// ```rust,ignore
+    /// if let Some(rds) = ctx.provisioned_resources.get("aws/rds") {
+    ///     if let Some(host) = rds.get("DB_HOST") {
+    ///         // use cached host — no AWS API call needed
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Old hosts that do not populate this field deserialize to an empty map.
+    #[serde(default)]
+    pub provisioned_resources: HashMap<String, HashMap<String, String>>,
 }
 
 /// What the plugin returns from its `apply` function.
@@ -387,8 +473,32 @@ pub struct PluginResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_name: Option<String>,
 
-    /// Non-fatal errors and warnings the plugin wants deckwatch to surface
-    /// in its own structured logs.
+    /// Structured ServiceAccount request — preferred over emitting a raw SA
+    /// in `kubernetes_resources`. Deckwatch handles create/patch with retry
+    /// semantics and surfaces the result in the UI and audit log.
+    ///
+    /// Set `irsa_role_arn` to the IAM role ARN when using IRSA; leave it
+    /// empty for a plain ServiceAccount with no IAM binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wants_service_account: Option<WantsServiceAccount>,
+
+    /// Annotations to stamp on the deployment's `metadata.annotations`.
+    ///
+    /// Keys should be namespaced (e.g. `"myorg.io/vault-injected": "true"`).
+    /// Deckwatch merges these into the deployment patch alongside the
+    /// plugin-env tracking annotations. Old plugins deserialize to an empty map.
+    #[serde(default)]
+    pub deployment_annotations: HashMap<String, String>,
+
+    /// Labels to stamp on the deployment's `metadata.labels`.
+    ///
+    /// Keys should be namespaced (e.g. `"myorg.io/managed-by-vault": "true"`).
+    /// Deckwatch includes these in the SSA patch `metadata.labels`.
+    /// Old plugins deserialize to an empty map.
+    #[serde(default)]
+    pub deployment_labels: HashMap<String, String>,
+
+    /// Non-fatal errors the plugin wants deckwatch to surface in its logs.
     ///
     /// Use this instead of `extism_pdk::log!()` — extism's log pipe cannot
     /// be bridged into deckwatch's tracing subscriber without a global
@@ -399,6 +509,15 @@ pub struct PluginResult {
     /// operator needs to see: IAM errors, RDS provisioning failures, etc.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+
+    /// Non-fatal warnings the plugin wants deckwatch to surface in its logs.
+    ///
+    /// Logged at `WARN` level after `apply()` returns; the deployment is not
+    /// blocked. Use this for degraded-but-functional conditions (e.g. a
+    /// non-critical config key is missing, or a cloud resource is still
+    /// warming up). Old plugins deserialize to an empty vec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A single environment variable to inject into the primary container.
