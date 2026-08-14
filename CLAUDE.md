@@ -41,13 +41,13 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch has its own `validate_key_value_field` (`278de71`); `KeyValue`/`Unknown` landed in deckwatch `main` before this SDK (rule 2 reversed) |
 | `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:281` |
 | `PluginContext` | Input to `apply()`: namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources` | `:36` |
-| `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings | `:77` (**ahead**: `init_containers`) |
+| `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings | `:77` |
 | `WantsServiceAccount` | Structured ServiceAccount request inside `PluginResult` | `:68` |
 | `EnvVarSpec`, `EnvVarSource`, `SecretKeyRef`, `ConfigMapKeyRef` | Container env vars, with `value` / `secret_key_ref` / `config_map_key_ref` constructors | `:134`; deckwatch names the others `EnvVarSourceSpec` `:143`, `SecretKeyRefSpec` `:151`, `ConfigMapKeyRefSpec` `:157` |
-| `SidecarSpec` | Sidecar container to inject | `:187` (**ahead**: `volumes`, `volume_mounts`, `primary_volume_mounts`, `cpu_/memory_` `request`/`limit`) |
-| (missing) | Volumes and mounts | deckwatch-only `VolumeSpec` `:165`, `VolumeMountSpec` `:177`; SDK PR #13 |
+| `SidecarSpec` | Sidecar or init container to inject; volumes, mounts, split requests/limits (0.10.0) | `:187` |
+| `VolumeSpec`, `VolumeMountSpec` | Pod volumes and container mounts for sidecars (0.10.0) | `:165`, `:177` |
 | `PluginResource` | A resource type a plugin can provision (fields, `singleton`, `output_keys`) | `:336` |
-| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output | `:354` / `:364` (**ahead**: `init_containers`) |
+| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output | `:354` / `:364` |
 | `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output | `:399` / `:429` (**behind**: no `delete_kubernetes_resources` yet) |
 | `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
 | `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:416` |
