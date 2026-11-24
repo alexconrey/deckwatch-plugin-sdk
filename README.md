@@ -53,6 +53,22 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 
   `metadata` receives only `config`, without steps 2–4. deckwatch never passes `DECKWATCH_ENCRYPTION_KEY` or `DECKWATCH_DATABASE_URL` through steps 3 or 4.
 
+### `parse_key_value_field`
+
+```rust
+pub fn parse_key_value_field(raw: &str) -> Result<BTreeMap<String, String>, String>
+```
+
+Parses the stored value of a [`key_value`](#configfieldtype) config field. Returns `Ok` with an empty map for an empty or whitespace-only value, `Ok` with the pairs for a JSON object of string values, and `Err` with a message for anything else (invalid JSON, an array, non-string values, or `Key=Value` text), so a plugin can report a misconfiguration instead of ignoring it.
+
+```rust
+let tags = match extism_pdk::config::get("RESOURCE_TAGS")? {
+    Some(raw) => deckwatch_plugin_sdk::parse_key_value_field(&raw)
+        .map_err(|e| extism_pdk::Error::msg(format!("RESOURCE_TAGS: {e}")))?,
+    None => Default::default(),
+};
+```
+
 ### `now()`
 
 ```rust
@@ -249,14 +265,27 @@ One field of a settings form, in `PluginMetadata.config_schema` or `PluginResour
 
 ### `ConfigFieldType`
 
-Enum, serialized in `snake_case`. Derives `Default` (`String`).
+Enum, serialized in `snake_case`. Derives `Default` (`String`). Every value is stored in plugin config as a string.
 
-| JSON value | Variant | Form control |
-|---|---|---|
-| `"string"` | `String` (default) | Text input |
-| `"secret"` | `Secret` | Masked input. Saved values are encrypted with AES-256-GCM when deckwatch has `DECKWATCH_ENCRYPTION_KEY` set. See [known host issues](#known-host-issues-deckwatch-067) |
-| `"bool"` | `Bool` | Checkbox; the value is `"true"` or `"false"` |
-| `"select"` | `Select` | Dropdown over `options` |
+| JSON value | Variant | Form control | Stored value |
+|---|---|---|---|
+| `"string"` | `String` (default) | Text input | As entered |
+| `"secret"` | `Secret` | Masked input | As entered; encrypted with AES-256-GCM when deckwatch has `DECKWATCH_ENCRYPTION_KEY` set. See [known host issues](#known-host-issues-deckwatch-067) |
+| `"bool"` | `Bool` | Checkbox | `"true"` or `"false"` |
+| `"key_value"` | `KeyValue` | One row per pair (planned; deckwatch currently shows a text input of the JSON) | A JSON object of string keys to string values, e.g. `{"Team":"platform"}`. Empty means no pairs. Read it with [`parse_key_value_field`](#parse_key_value_field) |
+| `"select"` | `Select` | Dropdown over `options` | The chosen option |
+| `"unknown"` | `Unknown` | Text input | As entered |
+
+**`Unknown` and forward compatibility.** Any `field_type` this SDK doesn't recognise deserializes to `Unknown` (`#[serde(other)]`) instead of failing, so a host built on this SDK can still load metadata from a plugin built on a newer one. The conversion is lossy: `Unknown` serializes as `"unknown"`, not as the original string. Don't return `Unknown` from a plugin.
+
+**Host support for `key_value`:**
+
+| deckwatch | Behaviour |
+|---|---|
+| `main` since `278de71` (2026-11-24; not yet released) | Accepts `key_value` and unknown types (rendered as text inputs). Validates `key_value` values on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string |
+| v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, so the plugin loses **every** config field and resource it declares |
+
+Only use `key_value` in a plugin once the deckwatch installs it targets have a release that includes `278de71`.
 
 ### `McpTuningField`
 
@@ -641,7 +670,7 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
 - **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
-- **Source compatibility is narrower.** Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `SidecarSpec`, `WantsServiceAccount`, `KubernetesObjectRef`, the request types). For types that derive `Default`, use `..Default::default()`.
+- **Source compatibility is narrower.** No enum is `#[non_exhaustive]`, so adding a variant (as 0.10.0 does to `ConfigFieldType`) breaks an exhaustive `match`; add a `_` arm. Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `SidecarSpec`, `WantsServiceAccount`, `KubernetesObjectRef`, the request types). For types that derive `Default`, use `..Default::default()`.
 - **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
 
 ## Developing this crate

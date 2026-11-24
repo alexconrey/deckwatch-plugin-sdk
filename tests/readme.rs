@@ -130,7 +130,9 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             ConfigFieldType::String,
             ConfigFieldType::Secret,
             ConfigFieldType::Bool,
+            ConfigFieldType::KeyValue,
             ConfigFieldType::Select,
+            ConfigFieldType::Unknown,
         ]),
     );
     put(
