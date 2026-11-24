@@ -11,7 +11,7 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 Upgrading from 0.9 needs, at most, these changes in plugin code:
 
 - **`match` on `ConfigFieldType` or `ProvisioningStatus` needs a `_` arm.** Both are now `#[non_exhaustive]`, and `ConfigFieldType` gains two variants. In exchange, future variants won't break plugins.
-- **Struct literals that name every field** of `PluginMetadata`, `PluginResult`, `ResourceProvisionResult`, `ResourceDeprovisionResult` or `SidecarSpec` need the new fields, or switch to `..Default::default()`. Every struct now derives `Default`.
+- **Struct literals that name every field** of `PluginMetadata`, `PluginContext`, `PluginResult`, `ResourceProvisionRequest`, `ResourceProvisionResult`, `ResourceDeprovisionRequest`, `ResourceDeprovisionResult` or `SidecarSpec` need the new fields, or switch to `..Default::default()`. Every struct now derives `Default`.
 - `ConfigFieldType::Select`'s discriminant changed from 3 to 4 (it only matters if you cast the enum to an integer).
 
 ### Breaking (wire)
@@ -28,6 +28,10 @@ Upgrading from 0.9 needs, at most, these changes in plugin code:
 - `SidecarSpec`: `cpu_request`, `cpu_limit`, `memory_request`, `memory_limit`, `volumes`, `volume_mounts`, `primary_volume_mounts`; new types `VolumeSpec` and `VolumeMountSpec` (#13).
 - `PluginResult.init_containers` and `ResourceProvisionResult.init_containers` (#13).
 - `Default` on every public struct; `PartialEq` and `Eq` on `ProvisioningStatus` (#20).
+- `PluginEvent` and `EventSeverity` (`info`, `warning`, `error`, plus an `Unknown` catch-all that hosts treat as `warning`): structured events with a stable `code` (`"<plugin-name>.<code>"`), a `message`, and optional `resource_id`, `object`, `retryable` and `hint`. A partial event still parses. New `events` field, omitted when empty, on `PluginResult`, `ResourceProvisionResult` and `ResourceDeprovisionResult` (#25).
+- Event helpers `info`, `warn`, `error` and `push_event` on those three results. Each also copies the event (`PluginEvent::legacy_text()`, `"<code>: <message>"`) into `errors`, `warnings` or, on deprovision, `message`, so hosts that don't read `events` still log it. No deckwatch version reads `events` yet (#25).
+- `trace_context`, a W3C `traceparent`, on `PluginContext`, `ResourceProvisionRequest` and `ResourceDeprovisionRequest` (omitted when `None`), and `trace_headers()` on each: the `traceparent` header for a plugin's outbound HTTP calls, when the value is valid. No deckwatch version sends it yet (#25).
+- `telemetry` module: the span attribute names `deckwatch.plugin.name`, `deckwatch.plugin.version` and `deckwatch.plugin.export`, the `traceparent` header name, and the event codes reserved for the host (`plugin.unspecified`, `plugin.fetch_failed`, `plugin.checksum_mismatch`, `plugin.load_failed`, `plugin.trap`, `plugin.timeout`, `plugin.output_invalid`, `plugin.k8s_apply_failed`, `plugin.policy_rejected`) (#25).
 
 ### Changed
 

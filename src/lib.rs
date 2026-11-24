@@ -25,12 +25,23 @@
 //! }
 //! ```
 //!
+//! ## Events and tracing
+//!
+//! Report problems as structured [`PluginEvent`]s with the result helpers
+//! ([`PluginResult::warn`], [`PluginResult::error`] and friends), which also
+//! copy each event into the legacy `errors`/`warnings` fields for hosts that
+//! don't read `events`. Forward the host's trace on outbound HTTP with
+//! [`PluginContext::trace_headers`]. Names shared with the host live in
+//! [`telemetry`].
+//!
 //! See the [README](https://github.com/alexconrey/deckwatch-plugin-sdk) for full
 //! build, test, and release instructions.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
+
+pub mod telemetry;
 
 // ── Host functions ────────────────────────────────────────────────────────────
 
@@ -359,6 +370,22 @@ pub struct ResourceProvisionRequest {
     pub resource_id: String,
     /// User-submitted form values, keyed by [`ConfigField::key`].
     pub fields: HashMap<String, String>,
+    /// W3C `traceparent` of the host's span around this call. Forward it with
+    /// [`trace_headers`](Self::trace_headers); see
+    /// [`PluginContext::trace_context`].
+    ///
+    /// Old hosts don't send it, and it deserializes to `None`; `None` is left
+    /// out of the JSON. deckwatch (as of `fc03ec2`) doesn't send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_context: Option<String>,
+}
+
+impl ResourceProvisionRequest {
+    /// Headers that put an outbound HTTP request in the host's trace. Same as
+    /// [`PluginContext::trace_headers`].
+    pub fn trace_headers(&self) -> Vec<(&'static str, String)> {
+        telemetry::trace_headers(self.trace_context.as_deref())
+    }
 }
 
 /// Result returned from the plugin's `provision()` WASM export.
@@ -443,6 +470,63 @@ pub struct ResourceProvisionResult {
     /// cycle. Ignored on submit and refresh; a refresh clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u64>,
+    /// Structured events about this call. Add them with
+    /// [`info`](Self::info), [`warn`](Self::warn), [`error`](Self::error) or
+    /// [`push_event`](Self::push_event), which also copy them into `errors`
+    /// and `warnings` for hosts that don't read `events`.
+    ///
+    /// Old plugins don't send it, and it deserializes to an empty vec; an
+    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<PluginEvent>,
+}
+
+impl ResourceProvisionResult {
+    /// Reports an [`EventSeverity::Info`] event. It has no legacy copy, so
+    /// hosts that don't read `events` don't see it. Returns the stored event,
+    /// so you can set its optional fields.
+    pub fn info(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Info, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Warning`] event, copied to `warnings`.
+    /// Returns the stored event, so you can set its optional fields.
+    pub fn warn(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Warning, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Error`] event, copied to `errors`. Returns
+    /// the stored event, so you can set its optional fields.
+    pub fn error(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Error, code, message))
+    }
+
+    /// Adds `event` to `events` and copies it into the legacy fields, exactly
+    /// like [`PluginResult::push_event`]: `Error` to `errors`, `Warning` and
+    /// `Unknown` to `warnings`, `Info` nowhere.
+    pub fn push_event(&mut self, event: PluginEvent) -> &mut PluginEvent {
+        match event.severity {
+            EventSeverity::Error => self.errors.push(event.legacy_text()),
+            EventSeverity::Warning | EventSeverity::Unknown => {
+                self.warnings.push(event.legacy_text())
+            }
+            EventSeverity::Info => {}
+        }
+        append_event(&mut self.events, event)
+    }
 }
 
 /// Input to a plugin's `deprovision()` WASM export.
@@ -469,6 +553,22 @@ pub struct ResourceDeprovisionRequest {
     /// The original operator-submitted form values.
     #[serde(default)]
     pub fields: HashMap<String, String>,
+    /// W3C `traceparent` of the host's span around this call. Forward it with
+    /// [`trace_headers`](Self::trace_headers); see
+    /// [`PluginContext::trace_context`].
+    ///
+    /// Old hosts don't send it, and it deserializes to `None`; `None` is left
+    /// out of the JSON. deckwatch (as of `fc03ec2`) doesn't send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_context: Option<String>,
+}
+
+impl ResourceDeprovisionRequest {
+    /// Headers that put an outbound HTTP request in the host's trace. Same as
+    /// [`PluginContext::trace_headers`].
+    pub fn trace_headers(&self) -> Vec<(&'static str, String)> {
+        telemetry::trace_headers(self.trace_context.as_deref())
+    }
 }
 
 /// What the plugin returns from its `deprovision()` export.
@@ -501,6 +601,88 @@ pub struct ResourceDeprovisionResult {
     /// this field ignore it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete_kubernetes_resources: Vec<KubernetesObjectRef>,
+    /// Structured events about this call. Add them with
+    /// [`info`](Self::info), [`warn`](Self::warn), [`error`](Self::error) or
+    /// [`push_event`](Self::push_event), which also copy them into `errors`
+    /// or `message` for hosts that don't read `events`.
+    ///
+    /// Old plugins don't send it, and it deserializes to an empty vec; an
+    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<PluginEvent>,
+}
+
+impl ResourceDeprovisionResult {
+    /// Reports an [`EventSeverity::Info`] event, appended to `message`.
+    /// Returns the stored event, so you can set its optional fields.
+    pub fn info(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Info, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Warning`] event, appended to `message`
+    /// (this result has no `warnings` field). Returns the stored event, so
+    /// you can set its optional fields.
+    pub fn warn(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Warning, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Error`] event, copied to `errors`. Returns
+    /// the stored event, so you can set its optional fields.
+    pub fn error(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Error, code, message))
+    }
+
+    /// Adds `event` to `events` and copies its
+    /// [`legacy_text`](PluginEvent::legacy_text) into the field older hosts
+    /// read. `message` is the only channel here besides `errors`:
+    ///
+    /// | Severity | Copied to |
+    /// |---|---|
+    /// | `Error` | `errors` |
+    /// | `Warning`, `Unknown`, `Info` | appended to `message`, after `"; "` unless `message` is empty |
+    ///
+    /// Only the code and message are copied. Returns the event as stored in
+    /// `events`; changing it afterwards doesn't change the copy.
+    ///
+    /// ```
+    /// use deckwatch_plugin_sdk::ResourceDeprovisionResult;
+    ///
+    /// let mut result = ResourceDeprovisionResult::default();
+    /// result.info("aws.role_deleted", "Deleted IAM role shop-role");
+    /// result.warn("aws.bucket_kept", "Bucket shop-uploads is not empty; kept it");
+    ///
+    /// assert_eq!(
+    ///     result.message,
+    ///     "aws.role_deleted: Deleted IAM role shop-role; \
+    ///      aws.bucket_kept: Bucket shop-uploads is not empty; kept it"
+    /// );
+    /// assert!(result.errors.is_empty());
+    /// ```
+    pub fn push_event(&mut self, event: PluginEvent) -> &mut PluginEvent {
+        match event.severity {
+            EventSeverity::Error => self.errors.push(event.legacy_text()),
+            EventSeverity::Warning | EventSeverity::Unknown | EventSeverity::Info => {
+                if !self.message.is_empty() {
+                    self.message.push_str("; ");
+                }
+                self.message.push_str(&event.legacy_text());
+            }
+        }
+        append_event(&mut self.events, event)
+    }
 }
 
 /// A Kubernetes object in the application's namespace, identified by API
@@ -542,6 +724,120 @@ impl KubernetesObjectRef {
     pub fn job(name: impl Into<String>) -> Self {
         Self::new("batch/v1", "Job", name)
     }
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+
+/// How serious a [`PluginEvent`] is.
+///
+/// Serialized in `snake_case`: `"info"`, `"warning"`, `"error"`.
+///
+/// Any other value, such as a severity added by a newer SDK, deserializes to
+/// [`EventSeverity::Unknown`] instead of failing. Without that catch-all, a
+/// host built on an older SDK would reject a newer plugin's entire result
+/// because of one event.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EventSeverity {
+    /// Worth knowing; nothing is wrong. For example, a resource was created,
+    /// or a step was skipped on purpose.
+    #[default]
+    Info,
+    /// The call did its job, but something needs attention. For example, an
+    /// optional setting is missing, or a cloud resource is still warming up.
+    Warning,
+    /// Something the plugin was asked to do failed.
+    Error,
+    /// A severity this SDK doesn't know, from a plugin built on a newer one.
+    ///
+    /// Hosts treat it as [`Warning`](EventSeverity::Warning). It serializes as
+    /// `"unknown"`, not as the original value. Don't return it from a plugin.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A structured notice, warning or error that a plugin reports.
+///
+/// Results carry these in `events` ([`PluginResult::events`],
+/// [`ResourceProvisionResult::events`], [`ResourceDeprovisionResult::events`]).
+/// Add them with the results' `info`, `warn`, `error` and `push_event`
+/// helpers, which also copy each event into the legacy `errors`, `warnings` or
+/// `message` field, so hosts that don't read `events` still log it.
+///
+/// Every key may be missing when deserializing (`#[serde(default)]` on the
+/// struct), so a partial or hand-written event still parses instead of making
+/// the host reject the whole result. Serializing always writes `severity`,
+/// `code`, `message` and `retryable`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct PluginEvent {
+    /// How serious the event is. A missing key reads as `info`, and an
+    /// unrecognised value as [`EventSeverity::Unknown`].
+    pub severity: EventSeverity,
+    /// Stable machine-readable code that hosts, alerts and docs can match on:
+    /// `"<plugin-name>.<code>"`, e.g. `"aws.assume_role_failed"`. Codes that
+    /// start with `plugin.` are reserved for the host (see
+    /// [`telemetry::code`]).
+    pub code: String,
+    /// Human-readable text for operators. Hosts cap its length (about 2 KB),
+    /// so put the essentials first. Don't put secrets in it: hosts log, store
+    /// and export it.
+    pub message: String,
+    /// The [`PluginResource::id`] this event is about, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    /// The Kubernetes object, in the application's namespace, this event is
+    /// about, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<KubernetesObjectRef>,
+    /// Whether repeating the same call may succeed with nothing changed (for
+    /// example after throttling or a timeout), as opposed to a failure that
+    /// needs a fix first (bad configuration, a missing permission).
+    #[serde(default)]
+    pub retryable: bool,
+    /// A suggested fix for the operator, e.g. `"Grant iam:PassRole to the
+    /// deckwatch role"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+impl PluginEvent {
+    /// An event with the given severity, code and message, and no optional
+    /// fields set.
+    pub fn new(
+        severity: EventSeverity,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity,
+            code: code.into(),
+            message: message.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The text the result helpers copy into the legacy `errors`, `warnings`
+    /// and `message` fields: `"<code>: <message>"`, or just the message when
+    /// `code` is empty.
+    ///
+    /// Hosts that read `events` can use it to recognise those copies and not
+    /// report the same problem twice.
+    pub fn legacy_text(&self) -> String {
+        if self.code.is_empty() {
+            self.message.clone()
+        } else {
+            format!("{}: {}", self.code, self.message)
+        }
+    }
+}
+
+/// Appends `event` to `events` and returns it, as stored.
+fn append_event(events: &mut Vec<PluginEvent>, event: PluginEvent) -> &mut PluginEvent {
+    let index = events.len();
+    events.push(event);
+    &mut events[index]
 }
 
 /// Context passed to a plugin's `apply` function.
@@ -606,6 +902,48 @@ pub struct PluginContext {
     /// empty map.
     #[serde(default)]
     pub provisioned_resources: HashMap<String, HashMap<String, String>>,
+
+    /// W3C `traceparent` of the host's span around this call, e.g.
+    /// `"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`. Send it on
+    /// the plugin's own HTTP requests with [`trace_headers`](Self::trace_headers),
+    /// so its API calls join the host's trace.
+    ///
+    /// `None` when the host doesn't trace the call. Old hosts don't send it,
+    /// and it deserializes to `None`; `None` is left out of the JSON. deckwatch
+    /// (as of `fc03ec2`) doesn't send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_context: Option<String>,
+}
+
+impl PluginContext {
+    /// Headers that put an outbound HTTP request in the host's trace:
+    /// `[("traceparent", <trace_context>)]` when
+    /// [`trace_context`](Self::trace_context) is a valid version-00 W3C
+    /// `traceparent`, and nothing otherwise (no context, or a malformed one).
+    /// Add them to every request the plugin makes, for example with
+    /// `extism_pdk`:
+    ///
+    /// ```rust,ignore
+    /// let mut req = extism_pdk::HttpRequest::new(url).with_method("GET");
+    /// for (name, value) in ctx.trace_headers() {
+    ///     req = req.with_header(name, value);
+    /// }
+    /// ```
+    ///
+    /// ```
+    /// use deckwatch_plugin_sdk::PluginContext;
+    ///
+    /// let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    /// let ctx = PluginContext {
+    ///     trace_context: Some(traceparent.into()),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(ctx.trace_headers(), [("traceparent", traceparent.to_string())]);
+    /// assert!(PluginContext::default().trace_headers().is_empty());
+    /// ```
+    pub fn trace_headers(&self) -> Vec<(&'static str, String)> {
+        telemetry::trace_headers(self.trace_context.as_deref())
+    }
 }
 
 /// What the plugin returns from its `apply` function.
@@ -734,6 +1072,90 @@ pub struct PluginResult {
     /// warming up). Old plugins deserialize to an empty vec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+
+    /// Structured events about this call. Add them with
+    /// [`info`](Self::info), [`warn`](Self::warn), [`error`](Self::error) or
+    /// [`push_event`](Self::push_event), which also copy them into `errors`
+    /// and `warnings` for hosts that don't read `events`.
+    ///
+    /// Old plugins don't send it, and it deserializes to an empty vec; an
+    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<PluginEvent>,
+}
+
+impl PluginResult {
+    /// Reports an [`EventSeverity::Info`] event. It has no legacy copy, so
+    /// hosts that don't read `events` don't see it. Returns the stored event,
+    /// so you can set its optional fields.
+    pub fn info(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Info, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Warning`] event, copied to `warnings`.
+    /// Returns the stored event, so you can set its optional fields.
+    pub fn warn(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Warning, code, message))
+    }
+
+    /// Reports an [`EventSeverity::Error`] event, copied to `errors`. Returns
+    /// the stored event, so you can set its optional fields.
+    pub fn error(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &mut PluginEvent {
+        self.push_event(PluginEvent::new(EventSeverity::Error, code, message))
+    }
+
+    /// Adds `event` to `events` and copies its
+    /// [`legacy_text`](PluginEvent::legacy_text) into the field older hosts
+    /// read:
+    ///
+    /// | Severity | Copied to |
+    /// |---|---|
+    /// | `Error` | `errors` |
+    /// | `Warning`, `Unknown` | `warnings` |
+    /// | `Info` | nothing (there is no legacy field for it) |
+    ///
+    /// Only the code and message are copied; `resource_id`, `object`,
+    /// `retryable` and `hint` exist only in `events`. Returns the event as
+    /// stored in `events`; changing it afterwards doesn't change the copy.
+    ///
+    /// ```
+    /// use deckwatch_plugin_sdk::PluginResult;
+    ///
+    /// let mut result = PluginResult::default();
+    /// result.warn("vault.addr_default", "VAULT_ADDR is not set; using the default");
+    /// let event = result.error("vault.token_missing", "No Vault token is configured");
+    /// event.hint = Some("Set VAULT_TOKEN in the plugin's settings".into());
+    ///
+    /// assert_eq!(result.events.len(), 2);
+    /// assert_eq!(
+    ///     result.warnings,
+    ///     ["vault.addr_default: VAULT_ADDR is not set; using the default"]
+    /// );
+    /// assert_eq!(result.errors, ["vault.token_missing: No Vault token is configured"]);
+    /// ```
+    pub fn push_event(&mut self, event: PluginEvent) -> &mut PluginEvent {
+        match event.severity {
+            EventSeverity::Error => self.errors.push(event.legacy_text()),
+            EventSeverity::Warning | EventSeverity::Unknown => {
+                self.warnings.push(event.legacy_text())
+            }
+            EventSeverity::Info => {}
+        }
+        append_event(&mut self.events, event)
+    }
 }
 
 /// An environment variable, for the primary container
@@ -1237,6 +1659,7 @@ mod tests {
             namespace: "production".into(),
             resource_id: "rds".into(),
             fields,
+            trace_context: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: ResourceProvisionRequest = serde_json::from_str(&json).unwrap();
@@ -1270,6 +1693,7 @@ mod tests {
             labels: HashMap::new(),
             plugin_outputs: HashMap::new(),
             provisioned_resources: HashMap::new(),
+            trace_context: None,
         };
         let mut aws_out = HashMap::new();
         aws_out.insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
@@ -1420,7 +1844,307 @@ mod tests {
         check::<VolumeSpec>();
         check::<VolumeMountSpec>();
         check::<SidecarSpec>();
+        check::<PluginEvent>();
         check::<ProvisioningStatus>();
         check::<ConfigFieldType>();
+        check::<EventSeverity>();
+    }
+
+    // ── Events, trace context and telemetry names (0.10.0) ──────────────────
+
+    const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    #[test]
+    fn event_severity_is_snake_case() {
+        for (severity, json) in [
+            (EventSeverity::Info, "\"info\""),
+            (EventSeverity::Warning, "\"warning\""),
+            (EventSeverity::Error, "\"error\""),
+            (EventSeverity::Unknown, "\"unknown\""),
+        ] {
+            assert_eq!(serde_json::to_string(&severity).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<EventSeverity>(json).unwrap(),
+                severity
+            );
+        }
+    }
+
+    // A severity from a newer SDK must not make the host reject the result.
+    #[test]
+    fn unrecognised_severity_deserializes_as_unknown() {
+        for other in ["\"critical\"", "\"Error\"", "\"\""] {
+            assert_eq!(
+                serde_json::from_str::<EventSeverity>(other).unwrap(),
+                EventSeverity::Unknown,
+                "{other}"
+            );
+        }
+        let r: PluginResult = serde_json::from_str(
+            r#"{"events":[{"severity":"critical","code":"p.x","message":"m"}],"errors":["e"]}"#,
+        )
+        .expect("a result with a future severity must still parse");
+        assert_eq!(r.events[0].severity, EventSeverity::Unknown);
+        assert_eq!(r.events[0].code, "p.x");
+        assert_eq!(r.errors, ["e"]);
+    }
+
+    #[test]
+    fn minimal_event_json() {
+        let json =
+            serde_json::to_value(PluginEvent::new(EventSeverity::Error, "p.x", "m")).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "severity": "error",
+                "code": "p.x",
+                "message": "m",
+                "retryable": false
+            })
+        );
+    }
+
+    #[test]
+    fn full_event_round_trips() {
+        let event = PluginEvent {
+            severity: EventSeverity::Warning,
+            code: "aws.tag_missing".into(),
+            message: "CostCenter tag is not set".into(),
+            resource_id: Some("rds".into()),
+            object: Some(KubernetesObjectRef::service_account("shop-aws-sa")),
+            retryable: true,
+            hint: Some("Add CostCenter to RESOURCE_TAGS".into()),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "severity": "warning",
+                "code": "aws.tag_missing",
+                "message": "CostCenter tag is not set",
+                "resource_id": "rds",
+                "object": { "api_version": "v1", "kind": "ServiceAccount", "name": "shop-aws-sa" },
+                "retryable": true,
+                "hint": "Add CostCenter to RESOURCE_TAGS"
+            })
+        );
+        assert_eq!(serde_json::from_value::<PluginEvent>(json).unwrap(), event);
+    }
+
+    // `#[serde(default)]` on the struct: one partial event must not make the
+    // host reject the whole result.
+    #[test]
+    fn partial_event_deserializes_with_defaults() {
+        let e: PluginEvent = serde_json::from_str("{}").unwrap();
+        assert_eq!(e, PluginEvent::default());
+        let e: PluginEvent = serde_json::from_str(r#"{"message":"m"}"#).unwrap();
+        assert_eq!(e.severity, EventSeverity::Info);
+        assert_eq!(e.code, "");
+        assert_eq!(e.message, "m");
+        let r: ResourceProvisionResult =
+            serde_json::from_str(r#"{"state":{"K":"v"},"events":[{"severity":"error"}]}"#).unwrap();
+        assert_eq!(r.events[0].severity, EventSeverity::Error);
+        assert_eq!(r.state["K"], "v");
+    }
+
+    #[test]
+    fn events_and_trace_context_omitted_from_json_when_empty() {
+        for json in [
+            serde_json::to_value(PluginResult::default()).unwrap(),
+            serde_json::to_value(ResourceProvisionResult::default()).unwrap(),
+            serde_json::to_value(ResourceDeprovisionResult::default()).unwrap(),
+        ] {
+            assert!(json.get("events").is_none(), "{json}");
+        }
+        for json in [
+            serde_json::to_value(PluginContext::default()).unwrap(),
+            serde_json::to_value(ResourceProvisionRequest::default()).unwrap(),
+            serde_json::to_value(ResourceDeprovisionRequest::default()).unwrap(),
+        ] {
+            assert!(json.get("trace_context").is_none(), "{json}");
+        }
+    }
+
+    #[test]
+    fn trace_context_round_trips() {
+        let ctx = PluginContext {
+            namespace: "ns".into(),
+            deployment_name: "app".into(),
+            trace_context: Some(TRACEPARENT.into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(json["trace_context"], TRACEPARENT);
+        let back: PluginContext = serde_json::from_value(json).unwrap();
+        assert_eq!(back.trace_context.as_deref(), Some(TRACEPARENT));
+    }
+
+    #[test]
+    fn legacy_text_is_code_and_message() {
+        let mut e = PluginEvent::new(EventSeverity::Error, "p.x", "it broke");
+        assert_eq!(e.legacy_text(), "p.x: it broke");
+        e.code.clear();
+        assert_eq!(e.legacy_text(), "it broke");
+    }
+
+    #[test]
+    fn plugin_result_helpers_copy_events_to_errors_and_warnings() {
+        let mut r = PluginResult::default();
+        r.info("p.noted", "i");
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        r.push_event(PluginEvent::new(EventSeverity::Unknown, "p.odd", "u"));
+        let severities: Vec<_> = r.events.iter().map(|e| e.severity).collect();
+        assert_eq!(
+            severities,
+            [
+                EventSeverity::Info,
+                EventSeverity::Warning,
+                EventSeverity::Error,
+                EventSeverity::Unknown
+            ]
+        );
+        assert_eq!(r.warnings, ["p.warned: w", "p.odd: u"]);
+        assert_eq!(r.errors, ["p.failed: e"]);
+    }
+
+    #[test]
+    fn provision_result_helpers_copy_events_to_errors_and_warnings() {
+        let mut r = ResourceProvisionResult::default();
+        r.info("p.noted", "i");
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        r.push_event(PluginEvent::new(EventSeverity::Unknown, "p.odd", "u"));
+        assert_eq!(r.events.len(), 4);
+        assert_eq!(r.warnings, ["p.warned: w", "p.odd: u"]);
+        assert_eq!(r.errors, ["p.failed: e"]);
+        assert_eq!(r.status, ProvisioningStatus::Pending, "status is untouched");
+    }
+
+    #[test]
+    fn deprovision_result_helpers_copy_events_to_errors_and_message() {
+        let mut r = ResourceDeprovisionResult::default();
+        r.info("p.noted", "i");
+        assert_eq!(
+            r.message, "p.noted: i",
+            "no separator when message was empty"
+        );
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        r.push_event(PluginEvent::new(EventSeverity::Unknown, "p.odd", "u"));
+        assert_eq!(r.events.len(), 4);
+        assert_eq!(r.message, "p.noted: i; p.warned: w; p.odd: u");
+        assert_eq!(r.errors, ["p.failed: e"]);
+
+        let mut r = ResourceDeprovisionResult {
+            message: "Deleted IAM role".into(),
+            ..Default::default()
+        };
+        r.warn("aws.bucket_kept", "bucket not empty");
+        assert_eq!(
+            r.message,
+            "Deleted IAM role; aws.bucket_kept: bucket not empty"
+        );
+    }
+
+    #[test]
+    fn helpers_return_the_stored_event() {
+        let mut r = PluginResult::default();
+        let e = r.error("p.failed", "e");
+        e.retryable = true;
+        e.resource_id = Some("rds".into());
+        e.hint = Some("h".into());
+        assert!(r.events[0].retryable);
+        assert_eq!(r.events[0].resource_id.as_deref(), Some("rds"));
+        assert_eq!(r.events[0].hint.as_deref(), Some("h"));
+        assert_eq!(
+            r.errors,
+            ["p.failed: e"],
+            "the legacy copy is only code and message"
+        );
+    }
+
+    #[test]
+    fn trace_headers_forward_only_a_valid_traceparent() {
+        let ctx = |trace_context: &str| PluginContext {
+            trace_context: Some(trace_context.into()),
+            ..Default::default()
+        };
+        let expected = [("traceparent", TRACEPARENT.to_string())];
+        assert_eq!(ctx(TRACEPARENT).trace_headers(), expected);
+        // Any trace flags are valid.
+        let unsampled = TRACEPARENT.replace("-01", "-00");
+        assert_eq!(ctx(&unsampled).trace_headers()[0].1, unsampled);
+        assert!(PluginContext::default().trace_headers().is_empty());
+
+        for bad in [
+            "",
+            "00",
+            "garbage",
+            // uppercase hex
+            "00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01",
+            // all-zero trace id, all-zero parent id
+            "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+            // forbidden and unsupported versions
+            "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            // wrong length, separators, non-hex, whitespace, header injection
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-00",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1",
+            "00_4bf92f3577b34da6a3ce929d0e0e4736_00f067aa0ba902b7_01",
+            "00-4bf92f3577b34da6a3ce929d0e0e47g6-00f067aa0ba902b7-01",
+            " 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nx-evil: 1",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-é",
+        ] {
+            assert!(ctx(bad).trace_headers().is_empty(), "{bad:?}");
+        }
+
+        let req = ResourceProvisionRequest {
+            trace_context: Some(TRACEPARENT.into()),
+            ..Default::default()
+        };
+        assert_eq!(req.trace_headers(), expected);
+        let req = ResourceDeprovisionRequest {
+            trace_context: Some(TRACEPARENT.into()),
+            ..Default::default()
+        };
+        assert_eq!(req.trace_headers(), expected);
+        assert!(ResourceDeprovisionRequest::default()
+            .trace_headers()
+            .is_empty());
+    }
+
+    // These names are a contract with deckwatch, which copies them by hand.
+    #[test]
+    fn telemetry_names_are_pinned() {
+        use telemetry::{attribute, code};
+        assert_eq!(attribute::DECKWATCH_PLUGIN_NAME, "deckwatch.plugin.name");
+        assert_eq!(
+            attribute::DECKWATCH_PLUGIN_VERSION,
+            "deckwatch.plugin.version"
+        );
+        assert_eq!(
+            attribute::DECKWATCH_PLUGIN_EXPORT,
+            "deckwatch.plugin.export"
+        );
+        assert_eq!(telemetry::TRACEPARENT_HEADER, "traceparent");
+        assert_eq!(code::RESERVED_PREFIX, "plugin.");
+        let codes = [
+            (code::UNSPECIFIED, "plugin.unspecified"),
+            (code::FETCH_FAILED, "plugin.fetch_failed"),
+            (code::CHECKSUM_MISMATCH, "plugin.checksum_mismatch"),
+            (code::LOAD_FAILED, "plugin.load_failed"),
+            (code::TRAP, "plugin.trap"),
+            (code::TIMEOUT, "plugin.timeout"),
+            (code::OUTPUT_INVALID, "plugin.output_invalid"),
+            (code::K8S_APPLY_FAILED, "plugin.k8s_apply_failed"),
+            (code::POLICY_REJECTED, "plugin.policy_rejected"),
+        ];
+        for (actual, expected) in codes {
+            assert_eq!(actual, expected);
+            assert!(actual.starts_with(code::RESERVED_PREFIX));
+        }
     }
 }
