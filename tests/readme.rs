@@ -115,7 +115,13 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
     let mut put = |name: &str, set: BTreeSet<String>| {
         m.insert(name.to_string(), set);
     };
-    put("PluginMetadata", keys(&PluginMetadata::default()));
+    put(
+        "PluginMetadata",
+        keys(&PluginMetadata {
+            min_deckwatch_version: Some("0.7.0".into()),
+            ..Default::default()
+        }),
+    );
     put(
         "ConfigField",
         keys(&ConfigField {
@@ -162,6 +168,7 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             wants_service_account: Some(sa.clone()),
             errors: vec!["e".into()],
             warnings: vec!["w".into()],
+            init_containers: vec![SidecarSpec::default()],
             ..Default::default()
         }),
     );
@@ -182,10 +189,32 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
         keys(&SidecarSpec {
             name: "s".into(),
             image: "i".into(),
-            env: vec![],
-            port: None,
-            cpu: None,
-            memory: None,
+            port: Some(1),
+            cpu_request: Some("c".into()),
+            cpu_limit: Some("c".into()),
+            memory_request: Some("m".into()),
+            memory_limit: Some("m".into()),
+            cpu: Some("c".into()),
+            memory: Some("m".into()),
+            ..Default::default()
+        }),
+    );
+    put(
+        "VolumeSpec",
+        keys(&VolumeSpec {
+            name: "v".into(),
+            volume_type: "emptyDir".into(),
+            source_name: Some("s".into()),
+            size_limit: Some("1Mi".into()),
+        }),
+    );
+    put(
+        "VolumeMountSpec",
+        keys(&VolumeMountSpec {
+            name: "v".into(),
+            mount_path: "/v".into(),
+            read_only: true,
+            sub_path: Some("p".into()),
         }),
     );
     put(
@@ -202,6 +231,7 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
         keys(&ResourceProvisionResult {
             warnings: vec!["w".into()],
             retry_after_secs: Some(1),
+            init_containers: vec![SidecarSpec::default()],
             ..Default::default()
         }),
     );

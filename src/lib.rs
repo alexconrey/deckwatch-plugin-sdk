@@ -295,6 +295,18 @@ pub struct PluginMetadata {
     /// Old plugins that do not export this field deserialize to an empty `Vec`.
     #[serde(default)]
     pub mcp_tuning_fields: Vec<McpTuningField>,
+    /// Minimum deckwatch version this plugin needs, e.g. `"0.7.0"`.
+    ///
+    /// Deckwatch checks it once, at load time, and skips the plugin with an
+    /// error log when it is older. The comparison splits both versions on
+    /// `.`, keeps only the parts that parse as integers, and compares the
+    /// first three (missing parts count as 0). So don't add a `v` prefix:
+    /// `"v0.7.0"` parses as 7.0.0. Pre-release suffixes such as `-beta` are
+    /// dropped with the part they're attached to. `None` means no constraint.
+    ///
+    /// Mirrors `deckwatch::plugins::PluginMetadata::min_deckwatch_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_deckwatch_version: Option<String>,
 }
 
 /// A provisionable infrastructure resource declared by a plugin.
@@ -387,6 +399,17 @@ pub struct ResourceProvisionResult {
     /// Old plugins that do not emit this field deserialize to an empty vec.
     #[serde(default)]
     pub sidecars: Vec<SidecarSpec>,
+    /// Init containers to add to every Deployment in the application.
+    ///
+    /// Intended to be prepended to `spec.template.spec.initContainers` on each
+    /// reconcile. As of deckwatch `fc03ec2` (and in the v0.6.7 release) the
+    /// host never stores this field for provisioned resources, so it has no
+    /// effect (deckwatch#249). Old plugins that do not emit this field
+    /// deserialize to an empty vec.
+    ///
+    /// Mirrors `deckwatch::plugins::ResourceProvisionResult::init_containers`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub init_containers: Vec<SidecarSpec>,
     /// Kubernetes objects to server-side apply (e.g. a ServiceAccount with an
     /// IRSA annotation), with the same rules as
     /// [`PluginResult::kubernetes_resources`].
@@ -687,6 +710,20 @@ pub struct PluginResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
 
+    /// Init containers to add to the pod's `initContainers` list, for one-shot
+    /// setup tasks that must finish before the containers start.
+    ///
+    /// Used on Deployment create and update only. An init container is skipped
+    /// if one with the same name exists. As of deckwatch `fc03ec2` (and in the
+    /// v0.6.7 release) they are **appended**, so they run after the workload's
+    /// own init containers (deckwatch#249); their `volumes` are not added to
+    /// the pod, their `primary_volume_mounts` are ignored, and no tracking
+    /// annotation is written. Old plugins deserialize to an empty vec.
+    ///
+    /// Mirrors `deckwatch::plugins::PluginResult::init_containers`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub init_containers: Vec<SidecarSpec>,
+
     /// Non-fatal warnings the plugin wants deckwatch to surface in its logs.
     ///
     /// Logged at `WARN` level after `apply()` returns; the deployment is not
@@ -798,8 +835,53 @@ pub struct ConfigMapKeyRef {
     pub key: String,
 }
 
-/// A sidecar container to inject into the pod alongside the primary container.
+/// A volume to attach to the pod, declared by a plugin sidecar.
+///
+/// Deckwatch collects all `VolumeSpec` entries from injected sidecars and
+/// merges them into `spec.template.spec.volumes` on the target pod, skipping
+/// any whose `name` already exists, so that both the sidecar and the primary
+/// container can mount the same volume.
+///
+/// Mirrors `deckwatch::plugins::VolumeSpec`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeSpec {
+    /// Volume name — must be unique within the pod.
+    pub name: String,
+    /// Volume type. deckwatch understands exactly `"emptyDir"` (with
+    /// `size_limit`), `"secret"` (`secretName` = `source_name`) and
+    /// `"configMap"` (`name` = `source_name`). Any other value produces a
+    /// volume with only a name, which Kubernetes defaults to `emptyDir`.
+    pub volume_type: String,
+    /// For `secret` and `configMap` volumes: the name of the source object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
+    /// For `emptyDir` volumes: optional size limit, e.g. `"256Mi"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_limit: Option<String>,
+}
+
+/// A volume mount to attach inside a container.
+///
+/// Used in [`SidecarSpec::volume_mounts`] for the sidecar itself, and in
+/// [`SidecarSpec::primary_volume_mounts`] for the pod's primary container.
+///
+/// Mirrors `deckwatch::plugins::VolumeMountSpec`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeMountSpec {
+    /// Name of the volume to mount (must match a `VolumeSpec::name` in the pod).
+    pub name: String,
+    /// Absolute path inside the container where the volume is mounted.
+    pub mount_path: String,
+    /// If `true`, the mount is read-only.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Mount only a sub-path of the volume rather than its root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_path: Option<String>,
+}
+
+/// A sidecar container to inject into the pod alongside the primary container.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SidecarSpec {
     /// Container name. Must be unique within the pod.
     pub name: String,
@@ -813,16 +895,64 @@ pub struct SidecarSpec {
 
     /// Port to expose on the sidecar. Becomes one `containerPort` with no
     /// name and the default protocol.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<i32>,
 
-    /// CPU request and limit (same value applied to both). e.g. `"50m"`.
-    #[serde(default)]
+    /// CPU request (e.g. `"50m"`). Takes precedence over the deprecated `cpu`
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_request: Option<String>,
+
+    /// CPU limit (e.g. `"200m"`). Takes precedence over the deprecated `cpu`
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit: Option<String>,
+
+    /// Memory request (e.g. `"64Mi"`). Takes precedence over the deprecated
+    /// `memory` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_request: Option<String>,
+
+    /// Memory limit (e.g. `"128Mi"`). Takes precedence over the deprecated
+    /// `memory` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<String>,
+
+    /// Deprecated: use `cpu_request` and `cpu_limit` instead.
+    ///
+    /// Sets both the request and the limit, where `cpu_request` / `cpu_limit`
+    /// are unset. Kept for plugins built against SDKs before 0.10.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<String>,
 
-    /// Memory request and limit (same value applied to both). e.g. `"64Mi"`.
-    #[serde(default)]
+    /// Deprecated: use `memory_request` and `memory_limit` instead.
+    ///
+    /// Sets both the request and the limit, where `memory_request` /
+    /// `memory_limit` are unset. Kept for plugins built against SDKs before
+    /// 0.10.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<String>,
+
+    /// Volumes required by this sidecar.
+    ///
+    /// Deckwatch collects these from all injected sidecars and merges them into
+    /// `spec.template.spec.volumes` on the pod, skipping names that already
+    /// exist, so the sidecar can mount them.
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
+
+    /// Volume mounts for this sidecar container.
+    #[serde(default)]
+    pub volume_mounts: Vec<VolumeMountSpec>,
+
+    /// Volume mounts to add to the pod's **primary** (first) container on
+    /// behalf of this sidecar.
+    ///
+    /// Use this when the primary container must read from a volume the sidecar
+    /// shares. Deckwatch merges these into the first container's
+    /// `volumeMounts`, skipping any with the same name and mount path.
+    #[serde(default)]
+    pub primary_volume_mounts: Vec<VolumeMountSpec>,
 }
 
 #[cfg(test)]
@@ -1013,6 +1143,43 @@ mod tests {
         assert_eq!(back.key, "rds_naming_convention");
         assert_eq!(back.placeholder, "k2-{namespace}-{app}");
         assert_eq!(back.default.as_deref(), Some("k2-{namespace}-{app}"));
+    }
+
+    #[test]
+    fn min_deckwatch_version_round_trips() {
+        let m = PluginMetadata {
+            name: "my-plugin".into(),
+            min_deckwatch_version: Some("0.7.0".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            json.contains("min_deckwatch_version"),
+            "field must be present when Some"
+        );
+        let back: PluginMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.min_deckwatch_version.as_deref(), Some("0.7.0"));
+    }
+
+    #[test]
+    fn min_deckwatch_version_none_is_omitted_from_json() {
+        let m = PluginMetadata::default();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("min_deckwatch_version"),
+            "field must be absent when None"
+        );
+    }
+
+    #[test]
+    fn min_deckwatch_version_missing_from_old_plugin_defaults_to_none() {
+        // Old plugin WASM that predates this field must still deserialize cleanly.
+        let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[]}"#;
+        let m: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert!(
+            m.min_deckwatch_version.is_none(),
+            "min_deckwatch_version should default to None when absent"
+        );
     }
 
     #[test]

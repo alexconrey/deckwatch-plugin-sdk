@@ -243,10 +243,11 @@ Returned by `metadata()`. Derives `Default`.
 | `config_schema` | `Vec<ConfigField>` | default | Settings form fields for this plugin's `config` |
 | `resources` | `Vec<PluginResource>` | default | Infrastructure this plugin can provision. Each one renders as a card on the Application page |
 | `mcp_tuning_fields` | `Vec<McpTuningField>` | default | Operator-tunable MCP guidance fields |
+| `min_deckwatch_version` | `Option<String>` | default, omitted when `None` | *0.10.0.* Minimum deckwatch version, e.g. `"0.7.0"`. Checked once at load time; an older host skips the plugin and logs an error. Only integer parts are compared, so don't add a `v` prefix (`"v0.7.0"` reads as 7.0.0) |
 
 - Ordering uses Kahn's algorithm over `provides`, `depends_on` and `optional_depends_on`. Plugins with no edges keep their configured order. If two plugins provide the same capability, the later one in the configured order is the provider. A cycle is logged and its members run in their configured order.
 - Use namespaced capability IDs (`"domain:capability"`). The AWS plugin family uses `"aws:iam-role"`, `"aws:service-account"`, `"aws:rds-connection"` and `"aws:s3-bucket"`.
-- deckwatch's copy also has `min_deckwatch_version` (an optional minimum host version; the host skips plugins that need a newer deckwatch). It is not in the SDK yet ([#11](https://github.com/alexconrey/deckwatch-plugin-sdk/pull/11)).
+- `min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which deckwatch doesn't bump between releases: unreleased `main` at `fc03ec2` still reports 0.6.7. Both the v0.6.7 release and `main` enforce it.
 
 ### `ConfigField`
 
@@ -351,8 +352,7 @@ Output of `apply()`. Derives `Default`; return `PluginResult::default()` to chan
 | `deployment_labels` | `HashMap<String, String>` | default | Labels for the Deployment's `metadata.labels`. Applied only on the reconcile path |
 | `errors` | `Vec<String>` | default, omitted when empty | Logged at `ERROR`. Never blocks the Deployment |
 | `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
-
-deckwatch's copy also has `init_containers: Vec<SidecarSpec>`. It is not in the SDK yet ([#13](https://github.com/alexconrey/deckwatch-plugin-sdk/pull/13)).
+| `init_containers` | `Vec<SidecarSpec>` | default, omitted when empty | *0.10.0.* Init containers for the pod. Appended, not prepended (see [how results are merged](#how-results-are-merged-create-and-update)) |
 
 ### `WantsServiceAccount`
 
@@ -406,18 +406,47 @@ Set exactly one of `value` and `value_from`. If `value_from` has both references
 
 ### `SidecarSpec`
 
-A container to add to the pod. Does not derive `Default`.
+A container to add to the pod. Derives `Default` (*0.10.0*). Also used for init containers.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
 | `name` | `String` | required | Container name; must be unique in the pod |
 | `image` | `String` | required | Image reference, e.g. `registry.myorg.internal/agent:v2` |
 | `env` | `Vec<EnvVarSpec>` | default | The container's environment |
-| `port` | `Option<i32>` | default | Becomes one `containerPort`, with no name and the default protocol (TCP) |
-| `cpu` | `Option<String>` | default | Sets both the CPU request and the limit, e.g. `"50m"` |
-| `memory` | `Option<String>` | default | Sets both the memory request and the limit, e.g. `"64Mi"` |
+| `port` | `Option<i32>` | default, omitted when `None` | Becomes one `containerPort`, with no name and the default protocol (TCP) |
+| `cpu_request` | `Option<String>` | default, omitted when `None` | *0.10.0.* CPU request, e.g. `"50m"` |
+| `cpu_limit` | `Option<String>` | default, omitted when `None` | *0.10.0.* CPU limit, e.g. `"200m"` |
+| `memory_request` | `Option<String>` | default, omitted when `None` | *0.10.0.* Memory request, e.g. `"64Mi"` |
+| `memory_limit` | `Option<String>` | default, omitted when `None` | *0.10.0.* Memory limit, e.g. `"128Mi"` |
+| `cpu` | `Option<String>` | default, omitted when `None` | Deprecated. Sets both the CPU request and the limit, where `cpu_request` / `cpu_limit` are unset |
+| `memory` | `Option<String>` | default, omitted when `None` | Deprecated. Sets both the memory request and the limit, where `memory_request` / `memory_limit` are unset |
+| `volumes` | `Vec<VolumeSpec>` | default | *0.10.0.* Volumes added to the pod, so this container (and the primary one) can mount them |
+| `volume_mounts` | `Vec<VolumeMountSpec>` | default | *0.10.0.* Mounts for this container |
+| `primary_volume_mounts` | `Vec<VolumeMountSpec>` | default | *0.10.0.* Mounts added to the pod's first container on this sidecar's behalf |
 
-`port`, `cpu` and `memory` are serialized as `null` when `None`. deckwatch's copy also has `volumes`, `volume_mounts`, `primary_volume_mounts`, and separate `cpu_request`/`cpu_limit`/`memory_request`/`memory_limit`. They are not in the SDK yet ([#13](https://github.com/alexconrey/deckwatch-plugin-sdk/pull/13)).
+Before 0.10.0, `port`, `cpu` and `memory` were serialized as `null` when `None`; hosts accept both.
+
+### `VolumeSpec`
+
+*0.10.0.* A pod volume, in `SidecarSpec.volumes`. Does not derive `Default`.
+
+| Field | Type | JSON | Description |
+|---|---|---|---|
+| `name` | `String` | required | Volume name; must be unique in the pod |
+| `volume_type` | `String` | required | `"emptyDir"`, `"secret"` or `"configMap"`. Any other value (`"projected"` included) produces a volume with only a name, which Kubernetes defaults to `emptyDir` |
+| `source_name` | `Option<String>` | default, omitted when `None` | Secret name (`secretName`) or ConfigMap name, for those two types |
+| `size_limit` | `Option<String>` | default, omitted when `None` | `emptyDir` size limit, e.g. `"256Mi"` |
+
+### `VolumeMountSpec`
+
+*0.10.0.* A volume mount, in `SidecarSpec.volume_mounts` and `SidecarSpec.primary_volume_mounts`. Does not derive `Default`.
+
+| Field | Type | JSON | Description |
+|---|---|---|---|
+| `name` | `String` | required | Name of a volume in the pod |
+| `mount_path` | `String` | required | Absolute path in the container |
+| `read_only` | `bool` | default | Mount read-only |
+| `sub_path` | `Option<String>` | default, omitted when `None` | Mount this path within the volume instead of its root |
 
 ### `ResourceProvisionRequest`
 
@@ -439,6 +468,7 @@ Output of `provision()`. Derives `Default`.
 | `state` | `HashMap<String, String>` | default | Stored with the resource. Each key becomes an env var in the first container of every Deployment and CronJob labelled `deckwatch.io/application=<application>`, and the whole map is passed back in `ResourceDeprovisionRequest.state` and `PluginContext.provisioned_resources` |
 | `deployment_annotations` | `HashMap<String, String>` | default | Stored with the resource and applied to the application's Deployments (not CronJobs) |
 | `sidecars` | `Vec<SidecarSpec>` | default | Stored with the resource and applied to the application's Deployments and CronJobs |
+| `init_containers` | `Vec<SidecarSpec>` | default, omitted when empty | *0.10.0.* Meant to be stored and applied like `sidecars`, but deckwatch never stores it, so it has no effect ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)) |
 | `kubernetes_resources` | `Vec<serde_json::Value>` | default | Kubernetes objects to server-side apply, with the same rules as `PluginResult.kubernetes_resources` |
 | `errors` | `Vec<String>` | default | Logged at `ERROR`. Provisioning still succeeds |
 | `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
@@ -541,7 +571,7 @@ Everything else in this section, and every [known host issue](#known-host-issues
 
 | Field | Create / update | Reconcile |
 |---|---|---|
-| `env_vars`, `sidecars`, `kubernetes_resources`, `service_account_name`, `wants_service_account` | used | ignored |
+| `env_vars`, `sidecars`, `init_containers`, `kubernetes_resources`, `service_account_name`, `wants_service_account` | used | ignored |
 | `outputs` | passed to later plugins | ignored |
 | `deployment_annotations`, `deployment_labels` | **ignored** | applied with server-side apply (field manager `deckwatch-plugin-resources`) |
 | `errors`, `warnings` | logged | logged |
@@ -552,6 +582,9 @@ If `apply()` traps or returns invalid JSON, the host logs an error and skips tha
 
 - **Env vars** go into the first container. A variable already present there, by name, is left alone: operator values win.
 - **Sidecars** are appended. A sidecar is skipped if a container with that name exists.
+- **Volumes** from every sidecar's `volumes` are added to the pod, skipping names that already exist. Each sidecar's `primary_volume_mounts` are added to the first container, skipping any with the same name and mount path.
+- **Resources:** the request is `cpu_request`, else `cpu`; the limit is `cpu_limit`, else `cpu`. Memory works the same way. On the reconcile path, provisioned sidecars always get both `requests` and `limits` maps, even when one is empty.
+- **Init containers** are appended to `initContainers`, so they run after the workload's own, and skipped if one with the same name exists. Their `volumes` aren't added to the pod, their `primary_volume_mounts` are ignored, and no tracking annotation is written ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)).
 - **ServiceAccount:** set only when the pod's `serviceAccountName` is unset or `"default"`. When several plugins set one, the first in run order wins. An empty name is not filtered out, so don't return `Some("")`.
 - **`wants_service_account`:** after the Deployment is saved, the host creates or patches the ServiceAccount, adding the IRSA annotation when `irsa_role_arn` is set.
 - **Tracking annotations** on the Deployment's `metadata.annotations`, where `<plugin>` is the configured name:
@@ -607,7 +640,7 @@ These are places where deckwatch's behaviour differs from what its own types or 
 5. **Provisioned sidecars lose `value_from`.** ([deckwatch#247](https://github.com/alexconrey/deckwatch/issues/247)) On the reconcile path, sidecar env vars are written as `{name, value}` only. `apply()` sidecars keep it.
 6. **No cleanup** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)) of anything injected through `apply()` (see [how results are merged](#how-results-are-merged-create-and-update)). When an application's last resource is deleted, reconcile stops visiting it, so its env vars, sidecars and annotations stay too.
 7. **`ResourceDeprovisionResult.message` isn't shown to the operator.** ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)) It's logged at `INFO`, and the delete request returns `204 No Content`.
-8. In deckwatch's own types (not yet in the SDK) ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), `init_containers` are appended rather than prepended as documented, and those returned by `provision()` are never stored.
+8. **`init_containers` are appended, not prepended** ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), so a plugin's init container runs after the workload's own. Those returned by `provision()` are never stored, so they have no effect.
 
 ---
 
@@ -684,7 +717,7 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
 - **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
-- **Source compatibility is narrower.** No enum is `#[non_exhaustive]`, so adding a variant (as 0.10.0 does to `ConfigFieldType`) breaks an exhaustive `match`; add a `_` arm. Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `SidecarSpec`, `WantsServiceAccount`, `KubernetesObjectRef`, the request types). For types that derive `Default`, use `..Default::default()`.
+- **Source compatibility is narrower.** No enum is `#[non_exhaustive]`, so adding a variant (as 0.10.0 does to `ConfigFieldType`) breaks an exhaustive `match`; add a `_` arm. Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `WantsServiceAccount`, `KubernetesObjectRef`, `VolumeSpec`, `VolumeMountSpec`, the request types). For types that derive `Default`, use `..Default::default()`.
 - **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
 
 ## Developing this crate
