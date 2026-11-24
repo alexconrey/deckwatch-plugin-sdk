@@ -387,6 +387,67 @@ pub struct ResourceDeprovisionResult {
     /// Use this to communicate what was and was not cleaned up.
     #[serde(default)]
     pub message: String,
+    /// Kubernetes objects for deckwatch to delete once `deprovision()` returns.
+    ///
+    /// Use this for objects deckwatch created on the plugin's behalf (through
+    /// `kubernetes_resources` or `wants_service_account`) that the plugin
+    /// can't delete itself, such as a ServiceAccount or a one-off Job.
+    ///
+    /// Deckwatch only deletes in the application's namespace (a
+    /// [`KubernetesObjectRef`] has no namespace) and only the kinds it allows:
+    /// `v1` `ServiceAccount` and `batch/v1` `Job`. Jobs are deleted together
+    /// with their pods, and before ServiceAccounts. A ServiceAccount that a
+    /// Deployment, CronJob or Job in the namespace still uses is kept, because
+    /// deleting it would stop new pods from being created. An object that is
+    /// already gone counts as deleted. Refusals and failures are logged and
+    /// audited, and never block removal of the resource record.
+    ///
+    /// Old plugins that do not emit this field deserialize to an empty vec, and
+    /// an empty vec is left out of the JSON. Deckwatch versions that predate
+    /// this field ignore it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delete_kubernetes_resources: Vec<KubernetesObjectRef>,
+}
+
+/// A Kubernetes object in the application's namespace, identified by API
+/// version, kind and name.
+///
+/// Used in [`ResourceDeprovisionResult::delete_kubernetes_resources`]. Use
+/// [`KubernetesObjectRef::service_account`] or [`KubernetesObjectRef::job`] to
+/// construct the kinds deckwatch deletes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KubernetesObjectRef {
+    /// API version, e.g. `"v1"` or `"batch/v1"`.
+    pub api_version: String,
+    /// Object kind, e.g. `"ServiceAccount"` or `"Job"`.
+    pub kind: String,
+    /// Object name.
+    pub name: String,
+}
+
+impl KubernetesObjectRef {
+    /// Reference an object by API version, kind and name.
+    pub fn new(
+        api_version: impl Into<String>,
+        kind: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            api_version: api_version.into(),
+            kind: kind.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Reference a `v1` `ServiceAccount`.
+    pub fn service_account(name: impl Into<String>) -> Self {
+        Self::new("v1", "ServiceAccount", name)
+    }
+
+    /// Reference a `batch/v1` `Job`.
+    pub fn job(name: impl Into<String>) -> Self {
+        Self::new("batch/v1", "Job", name)
+    }
 }
 
 /// Context passed to a plugin's `apply` function.
@@ -953,5 +1014,70 @@ mod tests {
         let back: PluginResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back.errors.len(), 1);
         assert!(back.errors[0].contains("AccessDenied"));
+    }
+
+    #[test]
+    fn deprovision_result_without_delete_kubernetes_resources_deserializes() {
+        // A plugin built against an older SDK never emits the field.
+        let json = r#"{"errors":["snapshot failed"],"message":"RDS kept"}"#;
+        let r: ResourceDeprovisionResult = serde_json::from_str(json).unwrap();
+        assert!(r.delete_kubernetes_resources.is_empty());
+        assert_eq!(r.errors, vec!["snapshot failed"]);
+        assert_eq!(r.message, "RDS kept");
+
+        let r: ResourceDeprovisionResult = serde_json::from_str("{}").unwrap();
+        assert!(r.delete_kubernetes_resources.is_empty());
+    }
+
+    #[test]
+    fn delete_kubernetes_resources_omitted_from_json_when_empty() {
+        let json = serde_json::to_value(ResourceDeprovisionResult::default()).unwrap();
+        assert_eq!(json, serde_json::json!({ "errors": [], "message": "" }));
+    }
+
+    #[test]
+    fn delete_kubernetes_resources_round_trips() {
+        let r = ResourceDeprovisionResult {
+            message: "Deleted IAM role".into(),
+            delete_kubernetes_resources: vec![
+                KubernetesObjectRef::job("shop-db-bootstrap-1a2b3c4d"),
+                KubernetesObjectRef::service_account("shop-aws-sa"),
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "errors": [],
+                "message": "Deleted IAM role",
+                "delete_kubernetes_resources": [
+                    { "api_version": "batch/v1", "kind": "Job", "name": "shop-db-bootstrap-1a2b3c4d" },
+                    { "api_version": "v1", "kind": "ServiceAccount", "name": "shop-aws-sa" }
+                ]
+            })
+        );
+        let back: ResourceDeprovisionResult = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back.delete_kubernetes_resources,
+            r.delete_kubernetes_resources
+        );
+        assert_eq!(back.message, "Deleted IAM role");
+    }
+
+    #[test]
+    fn kubernetes_object_ref_constructors() {
+        assert_eq!(
+            KubernetesObjectRef::service_account("shop-aws-sa"),
+            KubernetesObjectRef {
+                api_version: "v1".into(),
+                kind: "ServiceAccount".into(),
+                name: "shop-aws-sa".into(),
+            }
+        );
+        assert_eq!(
+            KubernetesObjectRef::job("shop-db-bootstrap"),
+            KubernetesObjectRef::new("batch/v1", "Job", "shop-db-bootstrap")
+        );
     }
 }
