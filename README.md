@@ -8,7 +8,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
-| Host behaviour documented here | deckwatch 0.6.7 (`main` at `5716f83`, 2026-11-24) |
+| Host behaviour documented here | deckwatch 0.6.7 (`main` at `fc03ec2`, 2026-11-24) |
 
 deckwatch keeps its own hand-written copy of these types. Where the two differ, the [type reference](#type-reference) says so.
 
@@ -555,16 +555,16 @@ So, to be re-polled, put a `<SOMETHING>_STATUS` key with an in-progress value in
 
 ## Known host issues (deckwatch 0.6.7)
 
-These are places where deckwatch's behaviour differs from what its own types or documentation say. Until they're fixed, plugins should work around them.
+These are places where deckwatch's behaviour differs from what its own types or documentation say. Each links to its deckwatch issue. Until they're fixed, plugins should work around them.
 
-1. **`secret` config values reach the plugin encrypted.** With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
-2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** They are applied only by reconcile, which only covers applications with at least one provisioned resource.
-3. **`ProvisioningStatus` doesn't drive re-polling.** The pending check on `state` does (see [provisioning](#provisioning)). A `Pending` result whose `state` doesn't look pending is never re-polled.
-4. **`retry_after_secs` leaks onto Deployments** as the annotation `deckwatch.io/retry-after-secs`, because it's stored with the resource's annotations.
-5. **Provisioned sidecars lose `value_from`.** On the reconcile path, sidecar env vars are written as `{name, value}` only. `apply()` sidecars keep it.
-6. **No cleanup** of anything injected through `apply()` (see [how results are merged](#how-results-are-merged-create-and-update)). When an application's last resource is deleted, reconcile stops visiting it, so its env vars, sidecars and annotations stay too.
-7. **`ResourceDeprovisionResult.message` isn't shown to the operator.** It's logged at `INFO`, and the delete request returns `204 No Content`.
-8. In deckwatch's own types (not yet in the SDK), `init_containers` are appended rather than prepended as documented, and those returned by `provision()` are never stored.
+1. **`secret` config values reach the plugin encrypted.** ([deckwatch#251](https://github.com/alexconrey/deckwatch/issues/251)) With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
+2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** ([deckwatch#244](https://github.com/alexconrey/deckwatch/issues/244)) They are applied only by reconcile, which only covers applications with at least one provisioned resource.
+3. **`ProvisioningStatus` doesn't drive re-polling.** ([deckwatch#245](https://github.com/alexconrey/deckwatch/issues/245)) The pending check on `state` does (see [provisioning](#provisioning)). A `Pending` result whose `state` doesn't look pending is never re-polled.
+4. **`retry_after_secs` leaks onto Deployments** ([deckwatch#246](https://github.com/alexconrey/deckwatch/issues/246)) as the annotation `deckwatch.io/retry-after-secs`, because it's stored with the resource's annotations.
+5. **Provisioned sidecars lose `value_from`.** ([deckwatch#247](https://github.com/alexconrey/deckwatch/issues/247)) On the reconcile path, sidecar env vars are written as `{name, value}` only. `apply()` sidecars keep it.
+6. **No cleanup** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)) of anything injected through `apply()` (see [how results are merged](#how-results-are-merged-create-and-update)). When an application's last resource is deleted, reconcile stops visiting it, so its env vars, sidecars and annotations stay too.
+7. **`ResourceDeprovisionResult.message` isn't shown to the operator.** ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)) It's logged at `INFO`, and the delete request returns `204 No Content`.
+8. In deckwatch's own types (not yet in the SDK) ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), `init_containers` are appended rather than prepended as documented, and those returned by `provision()` are never stored.
 
 ---
 
