@@ -4,7 +4,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 
 | | |
 |---|---|
-| SDK version | 0.9.0 (`Cargo.toml` on `main`; see [Releases](https://github.com/alexconrey/deckwatch-plugin-sdk/releases) and tags) |
+| SDK version | 0.10.0 on `main` (unreleased); latest tag `v0.9.0`. Items added after v0.9.0 are marked *0.10.0* |
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
@@ -448,6 +448,32 @@ Output of `deprovision()`. Derives `Default`.
 |---|---|---|---|
 | `errors` | `Vec<String>` | default | Logged at `ERROR`. The record is deleted anyway |
 | `message` | `String` | default | What was and wasn't cleaned up. Logged at `INFO`; the host doesn't show it in the UI |
+| `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. deckwatch 0.6.7 doesn't know this field and ignores it |
+
+### `KubernetesObjectRef`
+
+*0.10.0.* An object in the application's namespace, used in `ResourceDeprovisionResult.delete_kubernetes_resources`. Does not derive `Default`.
+
+| Field | Type | JSON | Description |
+|---|---|---|---|
+| `api_version` | `String` | required | API version, e.g. `"v1"` or `"batch/v1"`. The JSON key is `api_version`, not Kubernetes' `apiVersion` |
+| `kind` | `String` | required | Object kind, e.g. `"ServiceAccount"` or `"Job"` |
+| `name` | `String` | required | Object name. There is no namespace field: the object is always in the application's namespace |
+
+Constructors:
+
+| Constructor | Result |
+|---|---|
+| `KubernetesObjectRef::new(api_version, kind, name)` | Any object |
+| `KubernetesObjectRef::service_account(name)` | `v1` `ServiceAccount` |
+| `KubernetesObjectRef::job(name)` | `batch/v1` `Job` |
+
+What the SDK specifies for hosts that support the field (none yet; deckwatch 0.6.7 ignores it):
+- Only `v1` `ServiceAccount` and `batch/v1` `Job` are deleted.
+- Jobs are deleted with their pods, and before ServiceAccounts.
+- A ServiceAccount still used by a Deployment, CronJob or Job in the namespace is kept.
+- An object that is already gone counts as deleted.
+- Refusals and failures are logged and audited, and never block removal of the resource record.
 
 ---
 
@@ -615,7 +641,7 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
 - **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
-- **Source compatibility is narrower.** Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `SidecarSpec`, `WantsServiceAccount`, the request types). For types that derive `Default`, use `..Default::default()`.
+- **Source compatibility is narrower.** Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `SidecarSpec`, `WantsServiceAccount`, `KubernetesObjectRef`, the request types). For types that derive `Default`, use `..Default::default()`.
 - **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
 
 ## Developing this crate

@@ -223,7 +223,14 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
     );
     put(
         "ResourceDeprovisionResult",
-        keys(&ResourceDeprovisionResult::default()),
+        keys(&ResourceDeprovisionResult {
+            delete_kubernetes_resources: vec![KubernetesObjectRef::job("j")],
+            ..Default::default()
+        }),
+    );
+    put(
+        "KubernetesObjectRef",
+        keys(&KubernetesObjectRef::service_account("sa")),
     );
     m
 }
