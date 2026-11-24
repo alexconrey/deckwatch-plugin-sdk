@@ -266,7 +266,7 @@ One field of a settings form, in `PluginMetadata.config_schema` or `PluginResour
 
 ### `ConfigFieldType`
 
-Enum, serialized in `snake_case`. Derives `Default` (`String`). Every value is stored in plugin config as a string.
+Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustive]` (*0.10.0*): `match` on it needs a `_` arm. Every value is stored in plugin config as a string.
 
 | JSON value | Variant | Form control | Stored value |
 |---|---|---|---|
@@ -323,7 +323,7 @@ A kind of resource the plugin can provision, in `PluginMetadata.resources`. Deri
 
 ### `PluginContext`
 
-Input to `apply()`. Does **not** derive `Default`.
+Input to `apply()`. Derives `Default` (*0.10.0*).
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -356,7 +356,7 @@ Output of `apply()`. Derives `Default`; return `PluginResult::default()` to chan
 
 ### `WantsServiceAccount`
 
-Used in `PluginResult.wants_service_account`. Does not derive `Default`.
+Used in `PluginResult.wants_service_account`. Derives `Default` (*0.10.0*).
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -385,6 +385,8 @@ Set exactly one of `value` and `value_from`. If `value_from` has both references
 
 ### `EnvVarSource`
 
+Derives `Default` (*0.10.0*).
+
 | Field | Type | JSON | Description |
 |---|---|---|---|
 | `secret_key_ref` | `Option<SecretKeyRef>` | default, omitted when `None` | Read the value from a Secret key |
@@ -392,12 +394,16 @@ Set exactly one of `value` and `value_from`. If `value_from` has both references
 
 ### `SecretKeyRef`
 
+Derives `Default` (*0.10.0*).
+
 | Field | Type | JSON | Description |
 |---|---|---|---|
 | `name` | `String` | required | Secret name, in the workload's namespace |
 | `key` | `String` | required | Key in the Secret's `data` |
 
 ### `ConfigMapKeyRef`
+
+Derives `Default` (*0.10.0*).
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -428,7 +434,7 @@ Before 0.10.0, `port`, `cpu` and `memory` were serialized as `null` when `None`;
 
 ### `VolumeSpec`
 
-*0.10.0.* A pod volume, in `SidecarSpec.volumes`. Does not derive `Default`.
+*0.10.0.* A pod volume, in `SidecarSpec.volumes`. Derives `Default`.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -439,7 +445,7 @@ Before 0.10.0, `port`, `cpu` and `memory` were serialized as `null` when `None`;
 
 ### `VolumeMountSpec`
 
-*0.10.0.* A volume mount, in `SidecarSpec.volume_mounts` and `SidecarSpec.primary_volume_mounts`. Does not derive `Default`.
+*0.10.0.* A volume mount, in `SidecarSpec.volume_mounts` and `SidecarSpec.primary_volume_mounts`. Derives `Default`.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -450,7 +456,7 @@ Before 0.10.0, `port`, `cpu` and `memory` were serialized as `null` when `None`;
 
 ### `ResourceProvisionRequest`
 
-Input to `provision()`. Does not derive `Default`.
+Input to `provision()`. Derives `Default` (*0.10.0*).
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -479,7 +485,7 @@ Output of `provision()`. Derives `Default`.
 
 ### `ProvisioningStatus`
 
-Enum, serialized as the variant name (`"Pending"`, `"Available"`, `"Failed"`; **not** snake_case). Derives `Default` (`Pending`).
+Enum, serialized as the variant name (`"Pending"`, `"Available"`, `"Failed"`; **not** snake_case). Derives `Default` (`Pending`), and `PartialEq`/`Eq` (*0.10.0*). `#[non_exhaustive]` (*0.10.0*): `match` on it needs a `_` arm.
 
 | JSON value | Meaning |
 |---|---|
@@ -489,7 +495,7 @@ Enum, serialized as the variant name (`"Pending"`, `"Available"`, `"Failed"`; **
 
 ### `ResourceDeprovisionRequest`
 
-Input to `deprovision()`. Does not derive `Default`.
+Input to `deprovision()`. Derives `Default` (*0.10.0*).
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -511,7 +517,7 @@ Output of `deprovision()`. Derives `Default`.
 
 ### `KubernetesObjectRef`
 
-*0.10.0.* An object in the application's namespace, used in `ResourceDeprovisionResult.delete_kubernetes_resources`. Does not derive `Default`.
+*0.10.0.* An object in the application's namespace, used in `ResourceDeprovisionResult.delete_kubernetes_resources`. Derives `Default`.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
@@ -646,7 +652,7 @@ These are places where deckwatch's behaviour differs from what its own types or 
 
 ## Testing
 
-Put your logic in a plain function and test that on the host. Building `PluginContext` from JSON keeps tests compiling when the SDK adds fields, because new fields have defaults. A struct literal stops compiling the moment a field is added.
+Put your logic in a plain function and test that on the host. Build test inputs so they keep compiling when the SDK adds fields: from JSON (below; works with every SDK version), or, from 0.10.0, with `..Default::default()` (`PluginContext { namespace: "production".into(), ..Default::default() }`). A struct literal that names every field stops compiling the moment a field is added.
 
 ```rust
 #[cfg(test)]
@@ -717,7 +723,11 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
 - **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
-- **Source compatibility is narrower.** No enum is `#[non_exhaustive]`, so adding a variant (as 0.10.0 does to `ConfigFieldType`) breaks an exhaustive `match`; add a `_` arm. Adding a field still breaks struct literals of types without `Default` (`PluginContext`, `WantsServiceAccount`, `KubernetesObjectRef`, `VolumeSpec`, `VolumeMountSpec`, the request types). For types that derive `Default`, use `..Default::default()`.
+- **Source compatibility.** From 0.10.0:
+  - **Enum variants:** `ConfigFieldType` and `ProvisioningStatus` are `#[non_exhaustive]`, so the compiler requires a `_` arm in every `match`, and adding a variant is not a breaking change.
+  - **Struct fields:** every struct derives `Default`. Build structs with `..Default::default()`, never with a literal that names every field, and new fields won't break your build. Adding a public field still counts as breaking in Rust's semver rules (it breaks full literals), so the SDK releases it in a minor version, and CI's `cargo semver-checks` enforces that.
+
+  Upgrading from 0.9 to 0.10 needs a `_` arm in any exhaustive `match` on those enums, and updates to struct literals of changed types.
 - **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
 
 ## Developing this crate

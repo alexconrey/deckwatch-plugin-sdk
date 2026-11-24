@@ -61,7 +61,7 @@ pub fn now() -> u64 {
 /// semantics and surfaces the result in the UI and audit log.
 ///
 /// Mirrors `deckwatch::plugins::WantsServiceAccount` — kept in sync manually.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WantsServiceAccount {
     /// Name of the Kubernetes ServiceAccount to create or patch.
     pub name: String,
@@ -85,7 +85,8 @@ pub struct WantsServiceAccount {
 /// "Provisioning" section.
 ///
 /// Old plugins that do not emit this field deserialize to `Pending`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ProvisioningStatus {
     /// Resource creation is still in progress.
     #[default]
@@ -102,6 +103,7 @@ pub enum ProvisioningStatus {
 /// field in a plugin's `config_schema`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ConfigFieldType {
     /// Plain text input. Stored in plugin config as-is.
     #[default]
@@ -347,7 +349,7 @@ pub struct PluginResource {
 /// `provision_resource`), on refresh, and on each background re-poll of a
 /// pending resource. On refresh and re-poll, `fields` holds the values stored
 /// at provisioning time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceProvisionRequest {
     /// Name of the application being provisioned for.
     pub application_name: String,
@@ -452,7 +454,7 @@ pub struct ResourceProvisionResult {
 /// application does not call `deprovision()`. The plugin decides whether to actually delete the cloud
 /// resource — for S3 buckets with data this is typically a no-op with a warning;
 /// for RDS the plugin can take a final snapshot then delete.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceDeprovisionRequest {
     /// Name of the application the resource belongs to.
     pub application_name: String,
@@ -507,7 +509,7 @@ pub struct ResourceDeprovisionResult {
 /// Used in [`ResourceDeprovisionResult::delete_kubernetes_resources`]. Use
 /// [`KubernetesObjectRef::service_account`] or [`KubernetesObjectRef::job`] to
 /// construct the kinds deckwatch deletes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KubernetesObjectRef {
     /// API version, e.g. `"v1"` or `"batch/v1"`.
     pub api_version: String,
@@ -548,7 +550,7 @@ impl KubernetesObjectRef {
 /// `apply` function. On Deployment create and update, the fields reflect the
 /// Deployment **after** the operator's changes and before any plugin runs. On
 /// the reconcile loop they come from the live Deployment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginContext {
     /// Kubernetes namespace of the target deployment.
     pub namespace: String,
@@ -806,7 +808,7 @@ impl EnvVarSpec {
 }
 
 /// The source of an env var's value — a Secret or ConfigMap key reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvVarSource {
     /// Pull the value from a Kubernetes Secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,7 +820,7 @@ pub struct EnvVarSource {
 }
 
 /// Reference to a specific key within a Kubernetes Secret.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecretKeyRef {
     /// Name of the Kubernetes Secret.
     pub name: String,
@@ -827,7 +829,7 @@ pub struct SecretKeyRef {
 }
 
 /// Reference to a specific key within a Kubernetes ConfigMap.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigMapKeyRef {
     /// Name of the Kubernetes ConfigMap.
     pub name: String,
@@ -843,7 +845,7 @@ pub struct ConfigMapKeyRef {
 /// container can mount the same volume.
 ///
 /// Mirrors `deckwatch::plugins::VolumeSpec`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VolumeSpec {
     /// Volume name — must be unique within the pod.
     pub name: String,
@@ -866,7 +868,7 @@ pub struct VolumeSpec {
 /// [`SidecarSpec::primary_volume_mounts`] for the pod's primary container.
 ///
 /// Mirrors `deckwatch::plugins::VolumeMountSpec`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VolumeMountSpec {
     /// Name of the volume to mount (must match a `VolumeSpec::name` in the pod).
     pub name: String,
@@ -1387,5 +1389,38 @@ mod tests {
             KubernetesObjectRef::job("shop-db-bootstrap"),
             KubernetesObjectRef::new("batch/v1", "Job", "shop-db-bootstrap")
         );
+    }
+
+    /// Every public struct derives `Default` (so plugins can use
+    /// `..Default::default()` and stay source-compatible when fields are
+    /// added), and that default must survive a JSON round trip.
+    #[test]
+    fn every_struct_default_round_trips() {
+        fn check<T: Default + Serialize + serde::de::DeserializeOwned>() {
+            let json = serde_json::to_value(T::default()).unwrap();
+            let back: T = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(back).unwrap(), json);
+        }
+        check::<WantsServiceAccount>();
+        check::<ConfigField>();
+        check::<McpTuningField>();
+        check::<PluginMetadata>();
+        check::<PluginResource>();
+        check::<ResourceProvisionRequest>();
+        check::<ResourceProvisionResult>();
+        check::<ResourceDeprovisionRequest>();
+        check::<ResourceDeprovisionResult>();
+        check::<KubernetesObjectRef>();
+        check::<PluginContext>();
+        check::<PluginResult>();
+        check::<EnvVarSpec>();
+        check::<EnvVarSource>();
+        check::<SecretKeyRef>();
+        check::<ConfigMapKeyRef>();
+        check::<VolumeSpec>();
+        check::<VolumeMountSpec>();
+        check::<SidecarSpec>();
+        check::<ProvisioningStatus>();
+        check::<ConfigFieldType>();
     }
 }
