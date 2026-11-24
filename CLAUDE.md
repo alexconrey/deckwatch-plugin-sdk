@@ -45,7 +45,8 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | (missing) | Volumes and mounts | deckwatch-only `VolumeSpec` `:165`, `VolumeMountSpec` `:177`; SDK PR #13 |
 | `PluginResource` | A resource type a plugin can provision (fields, `singleton`, `output_keys`) | `:336` |
 | `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output | `:354` / `:364` (**ahead**: `init_containers`) |
-| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output | `:399` / `:429` |
+| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output | `:399` / `:429` (**behind**: no `delete_kubernetes_resources` yet) |
+| `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
 | `ProvisioningStatus` | Provisioning state enum, `snake_case` on the wire | `:416` |
 
 deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch. Re-check drift with a field-level diff of both files whenever either side changes; PLAN Phase 3 turns that into CI.
