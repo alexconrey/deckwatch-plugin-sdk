@@ -8,7 +8,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
-| Host behaviour documented here | deckwatch 0.6.7 (`main` at `fc03ec2`, 2026-11-24) |
+| Host behaviour documented here | deckwatch `main` at `fc03ec2` (2026-11-24, unreleased; its `Cargo.toml` still says 0.6.7). The v0.6.7 release differs: see [differences in the v0.6.7 release](#differences-in-the-v067-release) |
 
 deckwatch keeps its own hand-written copy of these types. Where the two differ, the [type reference](#type-reference) says so.
 
@@ -17,8 +17,8 @@ deckwatch keeps its own hand-written copy of these types. Where the two differ, 
 - [How a plugin works](#how-a-plugin-works)
 - [Quick start](#quick-start)
 - [Type reference](#type-reference)
-- [Host behaviour (deckwatch 0.6.7)](#host-behaviour-deckwatch-067)
-- [Known host issues (deckwatch 0.6.7)](#known-host-issues-deckwatch-067)
+- [Host behaviour](#host-behaviour)
+- [Known host issues](#known-host-issues)
 - [Testing](#testing)
 - [Releasing your plugin](#releasing-your-plugin)
 - [Versioning and compatibility](#versioning-and-compatibility)
@@ -226,7 +226,7 @@ How to read the **JSON** column:
 - **default**: a missing key deserializes to the type's default (`""`, `false`, `0`, empty list or map, `None`, or the enum's default variant).
 - **omitted when …**: serialization leaves the key out in that case.
 
-"Host" in descriptions means deckwatch 0.6.7; the [host behaviour](#host-behaviour-deckwatch-067) section has the details.
+"Host" in descriptions means deckwatch `main` at `fc03ec2`; the [host behaviour](#host-behaviour) section has the details.
 
 ### `PluginMetadata`
 
@@ -270,7 +270,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). Every value is s
 | JSON value | Variant | Form control | Stored value |
 |---|---|---|---|
 | `"string"` | `String` (default) | Text input | As entered |
-| `"secret"` | `Secret` | Masked input | As entered; encrypted with AES-256-GCM when deckwatch has `DECKWATCH_ENCRYPTION_KEY` set. See [known host issues](#known-host-issues-deckwatch-067) |
+| `"secret"` | `Secret` | Masked input | As entered; encrypted with AES-256-GCM when deckwatch has `DECKWATCH_ENCRYPTION_KEY` set. See [known host issues](#known-host-issues) |
 | `"bool"` | `Bool` | Checkbox | `"true"` or `"false"` |
 | `"key_value"` | `KeyValue` | One row per pair (planned; deckwatch currently shows a text input of the JSON) | A JSON object of string keys to string values, e.g. `{"Team":"platform"}`. Empty means no pairs. Read it with [`parse_key_value_field`](#parse_key_value_field) |
 | `"select"` | `Select` | Dropdown over `options` | The chosen option |
@@ -477,7 +477,7 @@ Output of `deprovision()`. Derives `Default`.
 |---|---|---|---|
 | `errors` | `Vec<String>` | default | Logged at `ERROR`. The record is deleted anyway |
 | `message` | `String` | default | What was and wasn't cleaned up. Logged at `INFO`; the host doesn't show it in the UI |
-| `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. deckwatch 0.6.7 doesn't know this field and ignores it |
+| `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. No deckwatch version supports this field yet (checked at `fc03ec2`); hosts ignore it |
 
 ### `KubernetesObjectRef`
 
@@ -497,7 +497,7 @@ Constructors:
 | `KubernetesObjectRef::service_account(name)` | `v1` `ServiceAccount` |
 | `KubernetesObjectRef::job(name)` | `batch/v1` `Job` |
 
-What the SDK specifies for hosts that support the field (none yet; deckwatch 0.6.7 ignores it):
+What the SDK specifies for hosts that support the field (none yet; deckwatch ignores it as of `fc03ec2`):
 - Only `v1` `ServiceAccount` and `batch/v1` `Job` are deleted.
 - Jobs are deleted with their pods, and before ServiceAccounts.
 - A ServiceAccount still used by a Deployment, CronJob or Job in the namespace is kept.
@@ -506,9 +506,23 @@ What the SDK specifies for hosts that support the field (none yet; deckwatch 0.6
 
 ---
 
-## Host behaviour (deckwatch 0.6.7)
+## Host behaviour
 
-This section describes what deckwatch 0.6.7 does with plugin output. It is not a promise about future versions. Behaviour the host's own documentation contradicts is listed under [known host issues](#known-host-issues-deckwatch-067).
+This section describes what deckwatch does with plugin output, as read from deckwatch's code on `main` at `fc03ec2` (2026-11-24). That commit is unreleased, and deckwatch's `Cargo.toml` version (0.6.7) is not bumped between releases, so the version number alone doesn't identify the behaviour. None of this is a promise about future versions. Behaviour the host's own documentation contradicts is listed under [known host issues](#known-host-issues).
+
+### Differences in the v0.6.7 release
+
+The v0.6.7 release (2026-11-06) is about 100 commits older than `fc03ec2`. These differences matter to plugins and the operators who run them:
+
+| Area | v0.6.7 release | `main` at `fc03ec2` |
+|---|---|---|
+| `inherit_env_keys` / `inherit_env_file_keys` | **Will pass `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` to a plugin** if configured to | Refuses them (`910e9bb`) |
+| `GET /api/settings` (unauthenticated) | **Returns plugin config values unmasked**, secret fields included; saving the plugin page could overwrite stored secrets with the masked placeholder | Masks values as `"configured"` unless the schema declares the key non-secret (`bf332ae`) |
+| `key_value` and unknown `field_type`s | One unknown type fails the whole `metadata()` parse, and the plugin loses all its config fields and resources | Supported; see [`ConfigFieldType`](#configfieldtype) (`278de71`) |
+| MCP tuning settings | `GET /api/plugins` drops `mcp_tuning_fields`, so the settings page never shows a plugin's tuning fields | Shown (`723492c`) |
+| `"upload"` sources | Uploading a plugin unloads every other plugin until the next full reload | Only the uploaded plugin is reloaded (`13a0bfc`) |
+
+Everything else in this section, and every [known host issue](#known-host-issues), applies to both.
 
 ### When `apply()` runs
 
@@ -582,9 +596,9 @@ So, to be re-polled, put a `<SOMETHING>_STATUS` key with an in-progress value in
 
 ---
 
-## Known host issues (deckwatch 0.6.7)
+## Known host issues
 
-These are places where deckwatch's behaviour differs from what its own types or documentation say. Each links to its deckwatch issue. Until they're fixed, plugins should work around them.
+These are places where deckwatch's behaviour differs from what its own types or documentation say. All of them exist both in the v0.6.7 release and on `main` at `fc03ec2`. Each links to its deckwatch issue. Until they're fixed, plugins should work around them.
 
 1. **`secret` config values reach the plugin encrypted.** ([deckwatch#251](https://github.com/alexconrey/deckwatch/issues/251)) With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
 2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** ([deckwatch#244](https://github.com/alexconrey/deckwatch/issues/244)) They are applied only by reconcile, which only covers applications with at least one provisioned resource.
