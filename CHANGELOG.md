@@ -6,9 +6,11 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 ## [0.10.0] - 2026-11-24
 
+0.10.0 catches the SDK up with deckwatch's own copy of these types: sidecar volumes and mounts, split resource requests and limits, init containers, and `min_deckwatch_version`. It also adds structured plugin events and W3C trace context, and a `key_value` config field type. Future additions break plugins less: every struct derives `Default`, and enums are `#[non_exhaustive]`. Upgrading is a mechanical change in plugin code (below). It is wire-compatible with older hosts and plugins, except for `key_value`.
+
 ### Breaking (source)
 
-Upgrading from 0.9 needs, at most, these changes in plugin code. All nine live deckwatch plugins needed them: the compiler reports `E0063` (missing fields) for each struct literal, and adding `..Default::default()` fixes it.
+Upgrading from 0.9 needs, at most, these changes in plugin code. All nine live deckwatch plugins needed them, in test code as well as the plugin itself: tests that build inputs (`PluginContext`, the request types) break too. The compiler reports `E0063` (missing fields) for each struct literal, and adding `..Default::default()` fixes it.
 
 - **`match` on `ConfigFieldType` or `ProvisioningStatus` needs a `_` arm.** Both are now `#[non_exhaustive]`, and `ConfigFieldType` gains two variants. In exchange, future variants won't break plugins.
 - **Struct literals that name every field** of `PluginMetadata`, `PluginContext`, `PluginResult`, `ResourceProvisionRequest`, `ResourceProvisionResult`, `ResourceDeprovisionRequest`, `ResourceDeprovisionResult` or `SidecarSpec` need the new fields, or switch to `..Default::default()`. Every struct now derives `Default`.
@@ -44,19 +46,21 @@ Upgrading from 0.9 needs, at most, these changes in plugin code. All nine live d
 
 - The crate's own tests compile again (`E0063`, missing `provisioned_resources`).
 - Rustdoc claims that deckwatch's code contradicts, about `ProvisioningStatus`, deprovision `message`, `deployment_annotations`/`deployment_labels`, MCP tuning, `required`, `provides`, `depends_on` and `retry_after_secs` (#18).
-- The docs no longer say `extism_pdk::log!` can't reach deckwatch's logs. extism 1.x turns it into `tracing` events (target `extism::pdk`), which deckwatch keeps by default since deckwatch#256.
+- The docs no longer say `extism_pdk::log!` can't reach deckwatch's logs. extism 1.x turns it into `tracing` events (target `extism::pdk`), which deckwatch keeps by default since deckwatch#256 (#24).
 
 ### Documentation
 
 - README rewritten against the code and deckwatch's host behaviour (#18, #19): every type and field with its JSON contract, the plugin exports and sandbox, verified examples, host behaviour as of deckwatch `fc03ec2`, differences in the deckwatch v0.6.7 release, and known host issues (alexconrey/deckwatch#244–#251).
+- README "Events and tracing": reporting events, forwarding the trace, the `telemetry` constants, and the `PluginEvent` and `EventSeverity` type reference (#25).
+- README: the `crate-type` advice now says `"rlib"` breaks host tests only when the `#[plugin_fn]` exports aren't limited to wasm32 (#24).
 
 ### Build and CI
 
 - CI on every PR and on `main`: fmt, clippy (host and wasm32), tests, wasm32 build, rustdoc, the MSRV job, and `cargo semver-checks` against the last release (#17, #21).
 - `rust-toolchain.toml` pins Rust 1.99; `Cargo.lock` is committed and CI builds with `--locked` (#17).
-- Tests that keep the README type reference in sync with the types (#18) and check wire compatibility with the 0.9.0 and 0.3.0 releases (#21).
-- A release workflow creates the GitHub Release from a `v*` tag, after checking the tag against `Cargo.toml` and this file.
-- Dependabot: weekly grouped version updates for cargo and GitHub Actions, with a cooldown; Dependabot alerts and security updates enabled.
+- Tests that keep the README type reference in sync with the types (#18) and check wire compatibility with the 0.9.0 and 0.3.0 releases (#21, extended for events and trace context in #25).
+- A release workflow creates the GitHub Release from a `v*` tag, after checking the tag against `Cargo.toml` and this file (#22).
+- Dependabot: weekly grouped version updates for cargo and GitHub Actions, with a cooldown; Dependabot alerts and security updates enabled (#23).
 
 ## [0.9.0] - 2026-08-14
 
