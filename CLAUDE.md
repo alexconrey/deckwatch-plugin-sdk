@@ -100,7 +100,7 @@ Not in CI yet:
 
 CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
 
-Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`) or raise the MSRV, which is a minor bump.
+Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`, plus a narrow `ignore` in `.github/dependabot.yml` so Dependabot doesn't re-propose it) or raise the MSRV, which is a minor bump.
 
 ## CI and security baseline (from deckwatch, 2026-11-24)
 
@@ -111,7 +111,7 @@ These are the practices that caught or would have caught real breakage in deckwa
 - **Permissions:** `permissions: contents: read` by default.
 - **Toolchain:** pinned in `rust-toolchain.toml` and installed exactly as pinned (`rustup toolchain install`, no arguments). Never `dtolnay/rust-toolchain@stable`. Floating `stable` hid a toolchain break in deckwatch's release build.
 - **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test --locked`, and the wasm32 build. Here those are the `Check` and `MSRV` jobs. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
-- **Dependabot:** cargo and github-actions, weekly, grouped, with a `cooldown` (3 days, 7 for majors). Any ignore rule gets a narrow version range and a comment saying why.
+- **Dependabot** (`.github/dependabot.yml`, since 2026-11-24): cargo and github-actions, weekly (Monday 06:00 UTC), minor and patch grouped, prefixes `chore(deps)` and `chore(ci)`. Cooldown is 3 days, 7 for cargo majors; github-actions supports only `default-days`. Dependabot alerts and security updates are enabled in the repository settings; security updates skip the schedule and cooldown. Any `ignore` rule gets a narrow version range and a comment saying why. The one exception is `deckwatch-plugin-sdk`, the test baselines from rule 6, which are pinned forever. `rust-toolchain` is deliberately not tracked: bump it by hand, together with deckwatch. Validate config changes against SchemaStore's `dependabot-2.0.json`; GitHub only reports errors after merge.
 - **Supply chain:**
   - pin actions by commit SHA;
   - run `cargo deny check` (advisories, bans, licenses, sources) and a scheduled advisory scan;

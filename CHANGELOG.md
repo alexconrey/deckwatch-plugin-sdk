@@ -51,6 +51,7 @@ Upgrading from 0.9 needs, at most, these changes in plugin code:
 - `rust-toolchain.toml` pins Rust 1.99; `Cargo.lock` is committed and CI builds with `--locked` (#17).
 - Tests that keep the README type reference in sync with the types (#18) and check wire compatibility with the 0.9.0 and 0.3.0 releases (#21).
 - A release workflow creates the GitHub Release from a `v*` tag, after checking the tag against `Cargo.toml` and this file.
+- Dependabot: weekly grouped version updates for cargo and GitHub Actions, with a cooldown; Dependabot alerts and security updates enabled.
 
 ## [0.9.0] - 2026-08-14
 

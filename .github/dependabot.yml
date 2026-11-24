@@ -1,0 +1,61 @@
+# Dependabot version updates for deckwatch-plugin-sdk.
+#
+# Dependabot alerts and security updates are enabled in the repository's
+# settings. Security updates are opened as soon as an advisory lands and ignore
+# the schedule and cooldown below; the schedule only governs routine version
+# bumps, which are grouped to keep PR noise down.
+#
+# Dependency PRs must not bump the crate version; releases are their own PRs
+# (CLAUDE.md "Releasing"). Cargo.lock only pins CI: plugins resolve the SDK's
+# dependencies in their own lock files.
+version: 2
+
+updates:
+  # ── Rust crates (Cargo.toml, Cargo.lock) ──────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    # Wait a few days after a release before proposing it. This guards against
+    # yanked or compromised releases. Security updates bypass this.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # The dev-dependencies `v0_9` and `v0_3` are this crate's own releases,
+      # pinned by tag on purpose as baselines for tests/wire_compat.rs. Never
+      # bump them; add a new baseline by hand after a release (CLAUDE.md rule
+      # 6). No version range: this is a permanent pin, not a hold-back of a
+      # broken release.
+      - dependency-name: deckwatch-plugin-sdk
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # ── GitHub Actions (pinned by commit SHA with a version comment) ─────────
+  # Dependabot updates the SHA and the comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    # github-actions supports only default-days (no semver-*-days).
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+# Not tracked on purpose:
+# - rust-toolchain: rust-toolchain.toml stays on the same Rust version as
+#   deckwatch's; bump both by hand, together.
+# - The cargo-semver-checks version in ci.yml (the install-action `tool:`
+#   input) isn't a dependency Dependabot can see; bump it by hand.
