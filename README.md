@@ -728,7 +728,7 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - **Struct fields:** every struct derives `Default`. Build structs with `..Default::default()`, never with a literal that names every field, and new fields won't break your build. Adding a public field still counts as breaking in Rust's semver rules (it breaks full literals), so the SDK releases it in a minor version, and CI's `cargo semver-checks` enforces that.
 
   Upgrading from 0.9 to 0.10 needs a `_` arm in any exhaustive `match` on those enums, and updates to struct literals of changed types.
-- **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
+- **Pin by tag:** `tag = "vX.Y.Z"`. From 0.10.0 every tag has a [GitHub Release](https://github.com/alexconrey/deckwatch-plugin-sdk/releases) with its notes, and v0.8.1, v0.8.2 and v0.9.0 have releases created afterwards from the changelog. Older tags have none, but [`CHANGELOG.md`](CHANGELOG.md) covers every tag.
 
 ## Developing this crate
 
