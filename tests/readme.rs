@@ -156,7 +156,8 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
                 "namespace": "ns",
                 "deployment_name": "d",
                 "annotations": {},
-                "labels": {}
+                "labels": {},
+                "trace_context": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
             }))
             .unwrap(),
         ),
@@ -169,6 +170,7 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             errors: vec!["e".into()],
             warnings: vec!["w".into()],
             init_containers: vec![SidecarSpec::default()],
+            events: vec![PluginEvent::default()],
             ..Default::default()
         }),
     );
@@ -224,6 +226,7 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             namespace: "ns".into(),
             resource_id: "r".into(),
             fields: Default::default(),
+            trace_context: Some("t".into()),
         }),
     );
     put(
@@ -232,6 +235,7 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             warnings: vec!["w".into()],
             retry_after_secs: Some(1),
             init_containers: vec![SidecarSpec::default()],
+            events: vec![PluginEvent::default()],
             ..Default::default()
         }),
     );
@@ -251,18 +255,38 @@ fn actual() -> BTreeMap<String, BTreeSet<String>> {
             resource_id: "r".into(),
             state: Default::default(),
             fields: Default::default(),
+            trace_context: Some("t".into()),
         }),
     );
     put(
         "ResourceDeprovisionResult",
         keys(&ResourceDeprovisionResult {
             delete_kubernetes_resources: vec![KubernetesObjectRef::job("j")],
+            events: vec![PluginEvent::default()],
             ..Default::default()
         }),
     );
     put(
         "KubernetesObjectRef",
         keys(&KubernetesObjectRef::service_account("sa")),
+    );
+    put(
+        "PluginEvent",
+        keys(&PluginEvent {
+            resource_id: Some("r".into()),
+            object: Some(KubernetesObjectRef::job("j")),
+            hint: Some("h".into()),
+            ..Default::default()
+        }),
+    );
+    put(
+        "EventSeverity",
+        variants(&[
+            EventSeverity::Info,
+            EventSeverity::Warning,
+            EventSeverity::Error,
+            EventSeverity::Unknown,
+        ]),
     );
     m
 }
