@@ -109,7 +109,7 @@ serde_json = "1"
 ```
 
 - Pin the SDK with `tag = "vX.Y.Z"`. Don't use `branch = "main"`, and avoid a bare `rev`.
-- Use `crate-type = ["cdylib"]` on its own. Adding `"rlib"` makes `cargo test` on the host fail to link, because extism's host imports only exist in wasm.
+- Use `crate-type = ["cdylib"]` on its own. With `"rlib"` added, `cargo test` on the host fails to link (extism's host imports only exist in wasm) unless every `#[plugin_fn]` is also marked `#[cfg(target_arch = "wasm32")]`, as some plugins do.
 
 ### 3. Set the default build target
 
