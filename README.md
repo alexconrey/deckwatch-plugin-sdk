@@ -723,11 +723,11 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
 - **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
-- **Source compatibility.** From 0.10.0, adding a field or an enum variant is not a breaking change, provided plugins follow two rules:
-  - build structs with `..Default::default()` (every struct derives `Default`), never with a literal that names every field;
-  - `match` on `ConfigFieldType` and `ProvisioningStatus` with a `_` arm (both are `#[non_exhaustive]`, so the compiler requires one).
+- **Source compatibility.** From 0.10.0:
+  - **Enum variants:** `ConfigFieldType` and `ProvisioningStatus` are `#[non_exhaustive]`, so the compiler requires a `_` arm in every `match`, and adding a variant is not a breaking change.
+  - **Struct fields:** every struct derives `Default`. Build structs with `..Default::default()`, never with a literal that names every field, and new fields won't break your build. Adding a public field still counts as breaking in Rust's semver rules (it breaks full literals), so the SDK releases it in a minor version, and CI's `cargo semver-checks` enforces that.
 
-  Upgrading from 0.9 to 0.10 is breaking once: exhaustive `match`es on those enums need a `_` arm, and literals of changed structs need updating.
+  Upgrading from 0.9 to 0.10 needs a `_` arm in any exhaustive `match` on those enums, and updates to struct literals of changed types.
 - **Pin by tag:** `tag = "vX.Y.Z"`. Not every tag has a GitHub Release yet; the tags themselves are stable.
 
 ## Developing this crate
