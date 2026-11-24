@@ -4,8 +4,28 @@ version = 3
 
 [[package]]
 name = "deckwatch-plugin-sdk"
+version = "0.3.0"
+source = "git+https://github.com/alexconrey/deckwatch-plugin-sdk?tag=v0.3.0#477ee114018dc781683cff6fd51a825093690c91"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "deckwatch-plugin-sdk"
+version = "0.9.0"
+source = "git+https://github.com/alexconrey/deckwatch-plugin-sdk?tag=v0.9.0#6fd33e3b135c21b4af838e2d4d49a2a5c3799cf2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "deckwatch-plugin-sdk"
 version = "0.10.0"
 dependencies = [
+ "deckwatch-plugin-sdk 0.3.0",
+ "deckwatch-plugin-sdk 0.9.0",
  "serde",
  "serde_json",
 ]

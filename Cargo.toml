@@ -15,3 +15,7 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+# Released versions, for the wire-compatibility tests in tests/wire_compat.rs.
+# Test-only: plugins never see dev-dependencies.
+v0_9 = { package = "deckwatch-plugin-sdk", git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.9.0" }
+v0_3 = { package = "deckwatch-plugin-sdk", git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.3.0" }

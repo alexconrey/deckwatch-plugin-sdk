@@ -24,6 +24,7 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 ## What's here
 
 - **`src/lib.rs`** (~950 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
+- **`tests/wire_compat.rs`** checks wire compatibility with the v0.9.0 and v0.3.0 releases in both directions (rule 6). The old releases are dev-dependencies (`v0_9`, `v0_3`), so plugins never see them.
 - **`tests/readme.rs`** checks that the README's type reference lists exactly the JSON keys and variants of every public type (rule 10).
 - **`README.md`** is the plugin author's reference: exports, sandbox, every field, and deckwatch's actual host behaviour and known host issues.
 - **Dependencies:** `serde` and `serde_json` only. Keep it that way: plugins pay for every dependency in wasm size.
@@ -62,7 +63,7 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
 4. **The crate must build for `wasm32-unknown-unknown`.** Lint and build that target in CI, not just the host.
 5. **Plugins pin the SDK by tag** (`tag = "vX.Y.Z"`), never `branch = "main"` and preferably not a bare `rev`. That requires real GitHub Releases for every tag (PLAN Phase 2).
 
-6. **Every public type crossing the boundary gets a JSON round-trip test,** plus a fixture of the *old* shape that must still deserialize after a change (PLAN Phase 1.4). Don't add `#[serde(deny_unknown_fields)]`: it breaks forward compatibility.
+6. **Wire compatibility is tested against real releases.** `tests/wire_compat.rs` pulls v0.9.0 (last release) and v0.3.0 (oldest pinned by a plugin) in as dev-dependencies and checks both directions: everything an old version sends survives in the new types, and an old reader gets exactly what it knows from new output. When you add a field, populate it in the test's `new` builders (they list every field, so the test won't compile until you do). After a release, add it as a baseline. The one accepted break, `ConfigFieldType::KeyValue` on v0.9.0 readers, is pinned by `key_value_field_type_is_rejected`. Don't add `#[serde(deny_unknown_fields)]`: it breaks forward compatibility.
 7. **Code compiled for wasm32 avoids `std` features the sandbox lacks** (clock, filesystem, threads, randomness). `now()` exists because `SystemTime::now()` panics there.
 8. **MSRV is 1.82** (`rust-version`). `now()` uses an `unsafe extern "C"` block: 1.81 rejects it, but only on the wasm32 build (host tests pass on 1.81), so the MSRV job must build wasm32. Raising the MSRV is a minor bump.
 9. **Keep the doc comment saying "Mirrors `deckwatch::plugins::…`"** on mirrored types, and update the table above when you add or change one.
@@ -85,16 +86,16 @@ CI (`.github/workflows/ci.yml`) runs these. Run them all before opening a PR:
 | `cargo fmt --check` | Check | Formatting (the only command without `--locked`) |
 | `cargo clippy --all-targets -- -D warnings` | Check | Host lint, tests included |
 | `cargo clippy --target wasm32-unknown-unknown -- -D warnings` | Check | wasm lint (`now()` only compiles here) |
-| `cargo test` | Check | Unit tests on the host |
+| `cargo test` | Check | Unit tests, `tests/readme.rs` (README drift) and `tests/wire_compat.rs` (old releases) on the host |
 | `cargo build --target wasm32-unknown-unknown` | Check | wasm build |
 | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` | Check | Docs build without warnings |
 | `cargo +1.82 build --target wasm32-unknown-unknown` and `cargo +1.82 test` | MSRV | MSRV check; the job reads the version from `Cargo.toml` |
+| `cargo semver-checks check-release --baseline-rev "$(git describe --tags --abbrev=0 --match 'v*')"` | Semver | Public API breaks must match the `Cargo.toml` bump (0.x: breaking needs a minor bump). Install with `cargo install cargo-semver-checks --locked`; CI pins 0.51.0 |
 
 Not in CI yet:
 
 | Command | What |
 |---|---|
-| `cargo semver-checks check-release --baseline-rev <last tag>` | API break check (needs `cargo install cargo-semver-checks`; PLAN Phase 1.4) |
 | `cargo deny check` | Advisories, licenses, bans, sources (needs `deny.toml`; PLAN Phase 4) |
 
 CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
