@@ -702,13 +702,17 @@ pub struct PluginResult {
 
     /// Non-fatal errors the plugin wants deckwatch to surface in its logs.
     ///
-    /// Use this instead of `extism_pdk::log!()` — extism's log pipe cannot
-    /// be bridged into deckwatch's tracing subscriber without a global
-    /// callback conflict. Errors listed here are logged at `ERROR` level by
-    /// deckwatch after `apply()` returns; the deployment is not blocked.
+    /// Deckwatch logs each at `ERROR` after `apply()` returns, with the
+    /// plugin's configured name, the namespace and the deployment, and counts
+    /// it in its `reported_error` metric; the deployment is not blocked. Use
+    /// this for any recoverable failure an operator needs to see: IAM errors,
+    /// RDS provisioning failures, etc.
     ///
-    /// Plugin authors should use this for any recoverable failure that an
-    /// operator needs to see: IAM errors, RDS provisioning failures, etc.
+    /// `extism_pdk::log!` works too: extism turns it into a host `tracing`
+    /// event (target `extism::pdk`) that carries only extism's per-call
+    /// instance id, not the plugin's name. deckwatch keeps those events by
+    /// default since `36e6637` (deckwatch#256); see the README's "The
+    /// sandbox".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
 

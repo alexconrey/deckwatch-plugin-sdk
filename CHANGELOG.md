@@ -40,6 +40,7 @@ Upgrading from 0.9 needs, at most, these changes in plugin code. All nine live d
 
 - The crate's own tests compile again (`E0063`, missing `provisioned_resources`).
 - Rustdoc claims that deckwatch's code contradicts, about `ProvisioningStatus`, deprovision `message`, `deployment_annotations`/`deployment_labels`, MCP tuning, `required`, `provides`, `depends_on` and `retry_after_secs` (#18).
+- The docs no longer say `extism_pdk::log!` can't reach deckwatch's logs. extism 1.x turns it into `tracing` events (target `extism::pdk`), which deckwatch keeps by default since deckwatch#256.
 
 ### Documentation
 

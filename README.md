@@ -44,7 +44,10 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
-- **Logging:** return messages in `errors` (logged at `ERROR`) or `warnings` (logged at `WARN`). Output from `extism_pdk::log!` does not reach deckwatch's logs.
+- **Logging:** two channels.
+  - **`errors` and `warnings` in the result.** deckwatch logs each at `ERROR` or `WARN` after the export returns, tagged with the plugin's configured name and the namespace and deployment (or application and resource), and counts each error in its `reported_error` metric. Use these for anything an operator must see.
+  - **`extism_pdk::log!`** and the level macros `info!`, `warn!`, `error!`, `debug!` and `trace!`. extism turns each call into a host `tracing` event at the same level, with target `extism::pdk`. The event's only field, `plugin`, is extism's instance id, which changes on every call, so put your plugin's name in the message. deckwatch keeps these events by default since `36e6637` (deckwatch#256, which added `extism::pdk=info` to the default filter). Earlier commits, including `fc03ec2` and the v0.6.7 release, drop them unless `RUST_LOG` includes `extism::pdk`.
+  - `apply` runs on every 10-second reconcile for applications with provisioned resources, so `info!` lines there repeat constantly. Prefer `debug!` for routine messages. Operators can keep only plugin warnings with `extism::pdk=warn` in `RUST_LOG`.
 - **Configuration:** read values with `extism_pdk::config::get("KEY")`. Keys and values come from the plugin's settings entry, in this order (later entries override earlier ones):
   1. `config` (static key/value pairs, including values saved through the settings form; see [`ConfigField`](#configfield));
   2. `CURRENT_TIMESTAMP`;
