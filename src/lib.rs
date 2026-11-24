@@ -98,10 +98,11 @@ pub enum ProvisioningStatus {
 ///
 /// Used by the deckwatch UI to render the appropriate form control for each
 /// field in a plugin's `config_schema`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigFieldType {
     /// Plain text input. Stored in plugin config as-is.
+    #[default]
     String,
     /// Masked text input. Stored encrypted in `PluginConfig.config` using the
     /// same AES-256-GCM envelope as `DeckwatchSettings.credentials`.
@@ -110,12 +111,6 @@ pub enum ConfigFieldType {
     Bool,
     /// Dropdown. The field must have a non-empty `options` list.
     Select,
-}
-
-impl Default for ConfigFieldType {
-    fn default() -> Self {
-        Self::String
-    }
 }
 
 /// A single field in a plugin's self-declared configuration schema.
@@ -582,29 +577,47 @@ pub struct EnvVarSpec {
 impl EnvVarSpec {
     /// Construct a static-value env var.
     pub fn value(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { name: name.into(), value: value.into(), value_from: None }
+        Self {
+            name: name.into(),
+            value: value.into(),
+            value_from: None,
+        }
     }
 
     /// Construct an env var sourced from a Kubernetes Secret key.
-    pub fn secret_key_ref(name: impl Into<String>, secret: impl Into<String>, key: impl Into<String>) -> Self {
+    pub fn secret_key_ref(
+        name: impl Into<String>,
+        secret: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             value: String::new(),
             value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeyRef { name: secret.into(), key: key.into() }),
+                secret_key_ref: Some(SecretKeyRef {
+                    name: secret.into(),
+                    key: key.into(),
+                }),
                 config_map_key_ref: None,
             }),
         }
     }
 
     /// Construct an env var sourced from a Kubernetes ConfigMap key.
-    pub fn config_map_key_ref(name: impl Into<String>, config_map: impl Into<String>, key: impl Into<String>) -> Self {
+    pub fn config_map_key_ref(
+        name: impl Into<String>,
+        config_map: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             value: String::new(),
             value_from: Some(EnvVarSource {
                 secret_key_ref: None,
-                config_map_key_ref: Some(ConfigMapKeyRef { name: config_map.into(), key: key.into() }),
+                config_map_key_ref: Some(ConfigMapKeyRef {
+                    name: config_map.into(),
+                    key: key.into(),
+                }),
             }),
         }
     }
@@ -767,7 +780,10 @@ mod tests {
         // Old plugin binary without resources field must still deserialize cleanly.
         let json = r#"{"name":"old-plugin","version":"0.5.1","description":"","provides":[],"depends_on":[],"optional_depends_on":[],"config_schema":[]}"#;
         let m: PluginMetadata = serde_json::from_str(json).unwrap();
-        assert!(m.resources.is_empty(), "resources should default to [] when absent");
+        assert!(
+            m.resources.is_empty(),
+            "resources should default to [] when absent"
+        );
     }
 
     #[test]
@@ -800,10 +816,17 @@ mod tests {
     #[test]
     fn resource_provision_result_missing_errors_defaults_to_empty_vec() {
         // Plugins that return state but no errors field must deserialize cleanly.
-        let json = r#"{"state":{"DB_HOST":"mydb.us-east-1.rds.amazonaws.com"},"kubernetes_resources":[]}"#;
+        let json =
+            r#"{"state":{"DB_HOST":"mydb.us-east-1.rds.amazonaws.com"},"kubernetes_resources":[]}"#;
         let r: ResourceProvisionResult = serde_json::from_str(json).unwrap();
-        assert!(r.errors.is_empty(), "errors should default to [] when absent");
-        assert_eq!(r.state.get("DB_HOST").map(String::as_str), Some("mydb.us-east-1.rds.amazonaws.com"));
+        assert!(
+            r.errors.is_empty(),
+            "errors should default to [] when absent"
+        );
+        assert_eq!(
+            r.state.get("DB_HOST").map(String::as_str),
+            Some("mydb.us-east-1.rds.amazonaws.com")
+        );
     }
 
     #[test]
@@ -829,7 +852,7 @@ mod tests {
         let json = serde_json::to_string(&resource).unwrap();
         let back: PluginResource = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "rds");
-        assert_eq!(back.singleton, true);
+        assert!(back.singleton);
         assert_eq!(back.output_keys, vec!["DB_HOST", "DB_PORT"]);
         assert_eq!(back.fields[0].key, "db_name");
     }
@@ -848,16 +871,23 @@ mod tests {
         let back: ResourceProvisionRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.application_name, "myapp");
         assert_eq!(back.resource_id, "rds");
-        assert_eq!(back.fields.get("db_name").map(String::as_str), Some("myapp"));
+        assert_eq!(
+            back.fields.get("db_name").map(String::as_str),
+            Some("myapp")
+        );
     }
 
     #[test]
     fn outputs_round_trip() {
         let mut r = PluginResult::default();
-        r.outputs.insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
+        r.outputs
+            .insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
         let json = serde_json::to_string(&r).unwrap();
         let back: PluginResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.outputs.get("role_arn").unwrap(), "arn:aws:iam::123:role/app");
+        assert_eq!(
+            back.outputs.get("role_arn").unwrap(),
+            "arn:aws:iam::123:role/app"
+        );
     }
 
     #[test]
@@ -868,6 +898,7 @@ mod tests {
             annotations: HashMap::new(),
             labels: HashMap::new(),
             plugin_outputs: HashMap::new(),
+            provisioned_resources: HashMap::new(),
         };
         let mut aws_out = HashMap::new();
         aws_out.insert("role_arn".into(), "arn:aws:iam::123:role/app".into());
@@ -908,7 +939,10 @@ mod tests {
     fn errors_omitted_from_json_when_empty() {
         let r = PluginResult::default();
         let json = serde_json::to_string(&r).unwrap();
-        assert!(!json.contains("errors"), "empty errors should be skipped in JSON");
+        assert!(
+            !json.contains("errors"),
+            "empty errors should be skipped in JSON"
+        );
     }
 
     #[test]

@@ -38,6 +38,8 @@ deckwatch-plugin-sdk = { git = "https://github.com/alexconrey/deckwatch-plugin-s
 serde_json = "1"
 ```
 
+The SDK needs **Rust 1.82 or newer** (its `rust-version`). Pin the SDK by `tag`, never `branch = "main"`.
+
 ### 3. Set the default build target
 
 ```toml

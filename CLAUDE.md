@@ -25,7 +25,7 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 - **`src/lib.rs`** (~920 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
 - **Dependencies:** `serde` and `serde_json` only. Keep it that way: plugins pay for every dependency in wasm size.
-- **No `Cargo.lock` in git** (gitignored, library default). The lock-file policy is open (PLAN Phase 4.4).
+- **`Cargo.lock` is committed** (decided 2026-11-24), so CI is reproducible. CI passes `--locked` everywhere; after changing dependencies, commit the updated lock file in the same PR. Plugins don't use this lock file; they resolve the SDK's dependencies in their own. Keep it at lockfile format v3, which Cargo writes automatically while `rust-version` is below 1.83, so the MSRV toolchain can read it.
 
 ### Public API and its deckwatch mirror
 
@@ -60,25 +60,35 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
 
 6. **Every public type crossing the boundary gets a JSON round-trip test,** plus a fixture of the *old* shape that must still deserialize after a change (PLAN Phase 1.4). Don't add `#[serde(deny_unknown_fields)]`: it breaks forward compatibility.
 7. **Code compiled for wasm32 avoids `std` features the sandbox lacks** (clock, filesystem, threads, randomness). `now()` exists because `SystemTime::now()` panics there.
-8. **MSRV is at least 1.82.** `now()` uses an `unsafe extern "C"` block, which needs 1.82. Raising the MSRV is a minor bump.
+8. **MSRV is 1.82** (`rust-version`). `now()` uses an `unsafe extern "C"` block: 1.81 rejects it, but only on the wasm32 build (host tests pass on 1.81), so the MSRV job must build wasm32. Raising the MSRV is a minor bump.
 9. **Keep the doc comment saying "Mirrors `deckwatch::plugins::…`"** on mirrored types, and update the table above when you add or change one.
 
 ## Commands
 
+The toolchain is pinned in `rust-toolchain.toml` (1.99, same as deckwatch, with clippy, rustfmt and the wasm32 target); rustup picks it up automatically. The MSRV is `rust-version` in `Cargo.toml` (1.82).
+
+CI (`.github/workflows/ci.yml`) runs these. Run them all before opening a PR:
+
+| Command | CI job | What |
+|---|---|---|
+| `cargo fmt --check` | Check | Formatting (the only command without `--locked`) |
+| `cargo clippy --all-targets -- -D warnings` | Check | Host lint, tests included |
+| `cargo clippy --target wasm32-unknown-unknown -- -D warnings` | Check | wasm lint (`now()` only compiles here) |
+| `cargo test` | Check | Unit tests on the host |
+| `cargo build --target wasm32-unknown-unknown` | Check | wasm build |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` | Check | Docs build without warnings |
+| `cargo +1.82 build --target wasm32-unknown-unknown` and `cargo +1.82 test` | MSRV | MSRV check; the job reads the version from `Cargo.toml` |
+
+Not in CI yet:
+
 | Command | What |
 |---|---|
-| `cargo test` | Unit tests on the host |
-| `cargo clippy --all-targets -- -D warnings` | Host lint, tests included |
-| `cargo clippy --target wasm32-unknown-unknown -- -D warnings` | wasm lint |
-| `cargo build --target wasm32-unknown-unknown` | wasm build check |
-| `cargo fmt --check` | Formatting |
-| `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` | Docs build without warnings |
-| `cargo semver-checks check-release --baseline-rev <last tag>` | API break check (needs `cargo install cargo-semver-checks`) |
-| `cargo deny check` | Advisories, licenses, bans, sources (needs `deny.toml`, PLAN Phase 4) |
+| `cargo semver-checks check-release --baseline-rev <last tag>` | API break check (needs `cargo install cargo-semver-checks`; PLAN Phase 1.4) |
+| `cargo deny check` | Advisories, licenses, bans, sources (needs `deny.toml`; PLAN Phase 4) |
 
-Run all of them before opening a PR. State on `main` (`d4c0280`, 2026-11-24): `cargo test` and host clippy fail with `E0063` at `src/lib.rs:865`; both clippy runs fail with `this impl can be derived` (`impl Default for ConfigFieldType`); `cargo fmt --check` fails with 10 diffs. The wasm32 build and `cargo doc` pass. Fixing these is PLAN Phase 1.1.
+CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
 
-There is no CI, `rust-toolchain.toml` or `rust-version` yet. When PLAN Phase 1 lands, make this table list exactly what CI runs (including the MSRV job) and put the job names here.
+Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`) or raise the MSRV, which is a minor bump.
 
 ## CI and security baseline (from deckwatch, 2026-11-24)
 
@@ -88,7 +98,7 @@ These are the practices that caught or would have caught real breakage in deckwa
 - **Concurrency:** a new push cancels a superseded PR run; runs on `main` are never cancelled.
 - **Permissions:** `permissions: contents: read` by default.
 - **Toolchain:** pinned in `rust-toolchain.toml` and installed exactly as pinned (`rustup toolchain install`, no arguments). Never `dtolnay/rust-toolchain@stable`. Floating `stable` hid a toolchain break in deckwatch's release build.
-- **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test --locked`, and the wasm32 build. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
+- **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test --locked`, and the wasm32 build. Here those are the `Check` and `MSRV` jobs. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
 - **Dependabot:** cargo and github-actions, weekly, grouped, with a `cooldown` (3 days, 7 for majors). Any ignore rule gets a narrow version range and a comment saying why.
 - **Supply chain:**
   - pin actions by commit SHA;
