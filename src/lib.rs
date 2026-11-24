@@ -76,12 +76,13 @@ pub struct WantsServiceAccount {
 /// Returned in [`ResourceProvisionResult::status`]. Serialized as the variant
 /// name (`"Pending"`, `"Available"`, `"Failed"`), not snake_case.
 ///
-/// In deckwatch 0.6.7 this does **not** decide whether a resource is re-polled:
-/// the host re-polls resources whose stored `state` looks pending (a `*_STATUS`
-/// key with an in-progress value, or `DB_ENGINE`/`DB_STATUS` without
-/// `DB_HOST`). On a re-poll, `Available` and `Failed` results are always
-/// stored, and a `Pending` result only if it adds `state` keys or no longer
-/// looks pending. See the README's "Provisioning" section.
+/// As of deckwatch `fc03ec2` (and in the v0.6.7 release) this does **not**
+/// decide whether a resource is re-polled: the host re-polls resources whose
+/// stored `state` looks pending (a `*_STATUS` key with an in-progress value,
+/// or `DB_ENGINE`/`DB_STATUS` without `DB_HOST`). On a re-poll, `Available`
+/// and `Failed` results are always stored, and a `Pending` result only if it
+/// adds `state` keys or no longer looks pending. See the README's
+/// "Provisioning" section.
 ///
 /// Old plugins that do not emit this field deserialize to `Pending`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -107,8 +108,8 @@ pub enum ConfigFieldType {
     String,
     /// Masked text input. Values saved through the settings form are stored
     /// AES-256-GCM encrypted when deckwatch has `DECKWATCH_ENCRYPTION_KEY`
-    /// set. deckwatch 0.6.7 does not decrypt them before calling the plugin
-    /// (see the README's "Known host issues").
+    /// set. deckwatch (as of `fc03ec2`) does not decrypt them before calling
+    /// the plugin (see the README's "Known host issues").
     Secret,
     /// Checkbox. Stored as `"true"` or `"false"`.
     Bool,
@@ -350,7 +351,7 @@ pub struct ResourceProvisionRequest {
 ///
 /// Deckwatch stores `state`, `deployment_annotations` and `sidecars` with the
 /// resource and applies them to the application's workloads on its reconcile
-/// loop (every 10 s in deckwatch 0.6.7).
+/// loop (every 10 s as of deckwatch `fc03ec2`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceProvisionResult {
     /// Stored with the resource. Each key becomes a plain env var in the
@@ -377,9 +378,9 @@ pub struct ResourceProvisionResult {
     /// Deckwatch stores these alongside `state` and server-side applies them
     /// to `spec.template.spec.containers` of the application's Deployments and
     /// CronJobs on each reconcile. The container `name` is the merge key, so
-    /// applying the same sidecar twice is idempotent. In deckwatch 0.6.7 the
-    /// sidecars' env vars lose `value_from` on this path, and deleting the
-    /// application's last resource does not remove them.
+    /// applying the same sidecar twice is idempotent. As of deckwatch
+    /// `fc03ec2`, the sidecars' env vars lose `value_from` on this path, and
+    /// deleting the application's last resource does not remove them.
     ///
     /// Use this to inject process sidecars (Redis, PostgreSQL, Fluent Bit, etc.)
     /// that should run alongside every workload in the application.
@@ -404,9 +405,9 @@ pub struct ResourceProvisionResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Provisioning lifecycle status. See [`ProvisioningStatus`] for what
-    /// deckwatch 0.6.7 actually does with it (it does not, by itself, cause
-    /// or stop re-polling). Old plugins that do not emit this field
-    /// deserialize to `Pending`.
+    /// deckwatch (as of `fc03ec2`) actually does with it (it does not, by
+    /// itself, cause or stop re-polling). Old plugins that do not emit this
+    /// field deserialize to `Pending`.
     #[serde(default)]
     pub status: ProvisioningStatus,
     /// Minimum seconds to wait before deckwatch re-polls this resource.
@@ -451,8 +452,8 @@ pub struct ResourceDeprovisionResult {
     /// Logged at `ERROR`. Does not block removal of the resource record.
     #[serde(default)]
     pub errors: Vec<String>,
-    /// What was and was not cleaned up. deckwatch 0.6.7 logs it at `INFO`;
-    /// it is not shown in the UI.
+    /// What was and was not cleaned up. deckwatch (as of `fc03ec2`) logs it
+    /// at `INFO`; it is not shown in the UI.
     #[serde(default)]
     pub message: String,
     /// Kubernetes objects for deckwatch to delete once `deprovision()` returns.
@@ -659,10 +660,10 @@ pub struct PluginResult {
     /// Annotations to stamp on the deployment's `metadata.annotations`.
     ///
     /// Keys should be namespaced (e.g. `"myorg.io/vault-injected": "true"`).
-    /// deckwatch 0.6.7 applies these only on the reconcile loop (server-side
-    /// apply), which only covers applications with a provisioned resource;
-    /// Deployment create and update ignore them. Old plugins deserialize to an
-    /// empty map.
+    /// deckwatch (as of `fc03ec2`) applies these only on the reconcile loop
+    /// (server-side apply), which only covers applications with a provisioned
+    /// resource; Deployment create and update ignore them. Old plugins
+    /// deserialize to an empty map.
     #[serde(default)]
     pub deployment_annotations: HashMap<String, String>,
 
