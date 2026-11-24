@@ -16,7 +16,7 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ## Keeping documentation current
 
-- **Same-PR rule:** any change to types, behaviour, commands, CI or process updates the docs in the same PR. That means README (usage and field reference), `CHANGELOG.md` (create it with the first release), and **this file** when a rule or command changes.
+- **Same-PR rule:** any change to types, behaviour, commands, CI or process updates the docs in the same PR. That means README (usage and field reference), `CHANGELOG.md` (a line under the upcoming version's section, in Keep a Changelog categories, marking anything breaking), and **this file** when a rule or command changes.
 - **Write down what you learn the hard way.** When a bug or compatibility break costs you time, add a rule below with a one-line note of what happened.
 - When a `PLAN.md` item is done, tick it. Remove stale text instead of appending contradictions.
 - Before finishing a session, re-read the sections you touched and make sure `CLAUDE.md`, README and `PLAN.md` agree with the code.
@@ -100,7 +100,7 @@ Not in CI yet:
 
 CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
 
-Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`) or raise the MSRV, which is a minor bump.
+Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`, plus a narrow `ignore` in `.github/dependabot.yml` so Dependabot doesn't re-propose it) or raise the MSRV, which is a minor bump.
 
 ## CI and security baseline (from deckwatch, 2026-11-24)
 
@@ -111,7 +111,7 @@ These are the practices that caught or would have caught real breakage in deckwa
 - **Permissions:** `permissions: contents: read` by default.
 - **Toolchain:** pinned in `rust-toolchain.toml` and installed exactly as pinned (`rustup toolchain install`, no arguments). Never `dtolnay/rust-toolchain@stable`. Floating `stable` hid a toolchain break in deckwatch's release build.
 - **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test --locked`, and the wasm32 build. Here those are the `Check` and `MSRV` jobs. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
-- **Dependabot:** cargo and github-actions, weekly, grouped, with a `cooldown` (3 days, 7 for majors). Any ignore rule gets a narrow version range and a comment saying why.
+- **Dependabot** (`.github/dependabot.yml`, since 2026-11-24): cargo and github-actions, weekly (Monday 06:00 UTC), minor and patch grouped, prefixes `chore(deps)` and `chore(ci)`. Cooldown is 3 days, 7 for cargo majors; github-actions supports only `default-days`. Dependabot alerts and security updates are enabled in the repository settings; security updates skip the schedule and cooldown. Any `ignore` rule gets a narrow version range and a comment saying why. The one exception is `deckwatch-plugin-sdk`, the test baselines from rule 6, which are pinned forever. `rust-toolchain` is deliberately not tracked: bump it by hand, together with deckwatch. Validate config changes against SchemaStore's `dependabot-2.0.json`; GitHub only reports errors after merge.
 - **Supply chain:**
   - pin actions by commit SHA;
   - run `cargo deny check` (advisories, bans, licenses, sources) and a scheduled advisory scan;
@@ -120,13 +120,23 @@ These are the practices that caught or would have caught real breakage in deckwa
 
 ## Releasing
 
-Tags `v0.2.0` through `v0.9.0` exist, but **none has a GitHub Release** and there is no `CHANGELOG.md` or release workflow yet (PLAN Phase 2). Until then, steps 1 and 3 still apply and the maintainer creates the tag and Release by hand.
+`.github/workflows/release.yml` runs when a `v*` tag is pushed:
+1. **Verify tag** (`.github/scripts/release-notes.sh`): the tag is `v<version>`, `<version>` equals `Cargo.toml`, and `CHANGELOG.md` has a dated `## [<version>] - YYYY-MM-DD` section with content. `Unreleased` is refused on purpose.
+2. **CI**: the whole of `ci.yml`, called with `workflow_call`, on the tagged commit.
+3. **Create GitHub Release**: titled with the tag, notes from the CHANGELOG section plus a pinning snippet. This job alone has `contents: write`.
 
-1. Bump the version in `Cargo.toml` and update `CHANGELOG.md` in one PR.
-2. After merge, **the maintainer tags `vX.Y.Z`**. A release workflow creates the **GitHub Release** from the tag, with notes and a CHANGELOG excerpt, after checking that the tag matches `Cargo.toml`.
-3. Tell downstream (deckwatch and each plugin) to move to the new tag. Track the plugins' pins in PLAN Phase 4. Find them with `grep deckwatch-plugin-sdk ~/git/github.com/alexconrey/deckwatch-plugin-*/Cargo.toml`.
+Run `.github/scripts/release-notes.sh vX.Y.Z` locally to preview the notes or the refusal.
 
-**Versioning:** semver within 0.x. Removing or renaming a public item or wire field, or raising the MSRV, bumps the minor version; additive, defaulted fields bump the patch or minor version.
+Steps:
+1. **Release PR:** collect everything planned for the release on `main` first (the maintainer prefers fewer, fuller minor releases). Then, in one PR, set `Cargo.toml` (and `Cargo.lock`, via any cargo command) to the version, and change the CHANGELOG heading from `## [X.Y.Z] - Unreleased` to today's date.
+2. After merge, **the maintainer tags `vX.Y.Z` on `main` and pushes the tag**. The workflow does the rest.
+3. Start the next section: `## [X.Y+1.0] - Unreleased` (or a patch version), and bump `Cargo.toml` when the first breaking change lands. Once `vX.Y.Z` exists, the Semver job fails any breaking change until `Cargo.toml` is bumped past it.
+4. Tell downstream (deckwatch and each plugin) to move to the new tag. Track the plugins' pins in PLAN Phase 4. Find them with `grep deckwatch-plugin-sdk ~/git/github.com/alexconrey/deckwatch-plugin-*/Cargo.toml`.
+5. Consider adding the release as a baseline in `tests/wire_compat.rs`.
+
+History: tags `v0.2.0` to `v0.9.0` predate the workflow. `v0.8.1`, `v0.8.2` and `v0.9.0` got GitHub Releases afterwards (2026-11-24, by hand, notes from the CHANGELOG, marked as created retroactively); older tags have none, and the CHANGELOG backfills their notes. `v0.5.1`, `v0.7.0` and `v0.8.0` were cut with a stale `Cargo.toml` version (0.5.0, 0.6.0, 0.6.0), which is why the workflow now checks it.
+
+**Versioning:** semver within 0.x. A minor bump for anything breaking: removing or renaming a public item or wire field, adding a public struct field (see rule 12), changing a type, or raising the MSRV. A patch bump for fixes and for additions semver-checks accepts (e.g. a new enum variant or a new type).
 
 Agents never create tags or releases unless the maintainer explicitly asks.
 

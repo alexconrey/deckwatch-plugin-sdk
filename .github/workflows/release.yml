@@ -1,0 +1,50 @@
+name: Release
+
+# Pushing a v* tag (the maintainer does this after the release PR merges)
+# checks the tag, runs the full CI on the tagged commit, and creates the
+# GitHub Release with the version's CHANGELOG.md section as notes.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Refuses a tag that doesn't match Cargo.toml, or whose CHANGELOG.md
+      # section is missing, undated ("Unreleased") or empty. Three old tags
+      # (v0.5.1, v0.7.0, v0.8.0) were cut with a stale Cargo.toml version.
+      - name: Check tag, Cargo.toml and CHANGELOG.md
+        run: .github/scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+
+  ci:
+    name: CI
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Create GitHub Release
+    needs: [verify, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release; nothing else gets write access
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md
