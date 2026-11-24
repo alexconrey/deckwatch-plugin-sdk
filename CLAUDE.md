@@ -25,7 +25,7 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 - **`src/lib.rs`** (~920 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
 - **Dependencies:** `serde` and `serde_json` only. Keep it that way: plugins pay for every dependency in wasm size.
-- **No `Cargo.lock` in git** (gitignored, library default). The lock-file policy is open (PLAN Phase 4.4).
+- **`Cargo.lock` is committed** (decided 2026-11-24), so CI is reproducible. CI passes `--locked` everywhere; after changing dependencies, commit the updated lock file in the same PR. Plugins don't use this lock file; they resolve the SDK's dependencies in their own. Keep it at lockfile format v3, which Cargo writes automatically while `rust-version` is below 1.83, so the MSRV toolchain can read it.
 
 ### Public API and its deckwatch mirror
 
@@ -71,7 +71,7 @@ CI (`.github/workflows/ci.yml`) runs these. Run them all before opening a PR:
 
 | Command | CI job | What |
 |---|---|---|
-| `cargo fmt --check` | Check | Formatting |
+| `cargo fmt --check` | Check | Formatting (the only command without `--locked`) |
 | `cargo clippy --all-targets -- -D warnings` | Check | Host lint, tests included |
 | `cargo clippy --target wasm32-unknown-unknown -- -D warnings` | Check | wasm lint (`now()` only compiles here) |
 | `cargo test` | Check | Unit tests on the host |
@@ -86,7 +86,9 @@ Not in CI yet:
 | `cargo semver-checks check-release --baseline-rev <last tag>` | API break check (needs `cargo install cargo-semver-checks`; PLAN Phase 1.4) |
 | `cargo deny check` | Advisories, licenses, bans, sources (needs `deny.toml`; PLAN Phase 4) |
 
-CI doesn't use `--locked` because `Cargo.lock` is gitignored (PLAN Phase 4.4). Keep the MSRV job reading `rust-version`, not hard-coding it.
+CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
+
+Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`) or raise the MSRV, which is a minor bump.
 
 ## CI and security baseline (from deckwatch, 2026-11-24)
 
@@ -96,7 +98,7 @@ These are the practices that caught or would have caught real breakage in deckwa
 - **Concurrency:** a new push cancels a superseded PR run; runs on `main` are never cancelled.
 - **Permissions:** `permissions: contents: read` by default.
 - **Toolchain:** pinned in `rust-toolchain.toml` and installed exactly as pinned (`rustup toolchain install`, no arguments). Never `dtolnay/rust-toolchain@stable`. Floating `stable` hid a toolchain break in deckwatch's release build.
-- **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test` (`--locked` once `Cargo.lock` is committed), and the wasm32 build. Here those are the `Check` and `MSRV` jobs. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
+- **Required jobs:** fmt, clippy (host all-targets and wasm32) with `-D warnings`, `cargo test --locked`, and the wasm32 build. Here those are the `Check` and `MSRV` jobs. Make them **required status checks** in a `main` ruleset, so red CI blocks merging.
 - **Dependabot:** cargo and github-actions, weekly, grouped, with a `cooldown` (3 days, 7 for majors). Any ignore rule gets a narrow version range and a comment saying why.
 - **Supply chain:**
   - pin actions by commit SHA;
