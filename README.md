@@ -16,6 +16,7 @@ deckwatch keeps its own hand-written copy of these types. Where the two differ, 
 
 - [How a plugin works](#how-a-plugin-works)
 - [Quick start](#quick-start)
+- [Events and tracing](#events-and-tracing)
 - [Type reference](#type-reference)
 - [Host behaviour](#host-behaviour)
 - [Known host issues](#known-host-issues)
@@ -44,8 +45,9 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
-- **Logging:** two channels.
-  - **`errors` and `warnings` in the result.** deckwatch logs each at `ERROR` or `WARN` after the export returns, tagged with the plugin's configured name and the namespace and deployment (or application and resource), and counts each error in its `reported_error` metric. Use these for anything an operator must see.
+- **Logging:** three channels.
+  - **Events** (the [event helpers](#reporting-events) `info`, `warn` and `error`). These are the preferred way to report problems. Each helper also copies the event into `errors` or `warnings` (on deprovision, `message`). No deckwatch version reads `events` yet, so for now deckwatch logs only those copies.
+  - **`errors` and `warnings` in the result.** deckwatch logs each at `ERROR` or `WARN` after the export returns, tagged with the plugin's configured name and the namespace and deployment (or application and resource), and counts each error in its `reported_error` metric.
   - **`extism_pdk::log!`** and the level macros `info!`, `warn!`, `error!`, `debug!` and `trace!`. extism turns each call into a host `tracing` event at the same level, with target `extism::pdk`. The event's only field, `plugin`, is extism's instance id, which changes on every call, so put your plugin's name in the message. deckwatch keeps these events by default since `36e6637` (deckwatch#256, which added `extism::pdk=info` to the default filter). Earlier commits, including `fc03ec2` and the v0.6.7 release, drop them unless `RUST_LOG` includes `extism::pdk`.
   - `apply` runs on every 10-second reconcile for applications with provisioned resources, so `info!` lines there repeat constantly. Prefer `debug!` for routine messages. Operators can keep only plugin warnings with `extism::pdk=warn` in `RUST_LOG`.
 - **Configuration:** read values with `extism_pdk::config::get("KEY")`. Keys and values come from the plugin's settings entry, in this order (later entries override earlier ones):
@@ -219,6 +221,90 @@ metadata:
 
 deckwatch itself runs **every** loaded plugin on every Deployment it creates or updates. Opt-in is up to the plugin.
 
+## Events and tracing
+
+*0.10.0.* Two additions let a host show what plugins report and trace what they do, without the SDK depending on OpenTelemetry:
+
+- results carry structured [events](#pluginevent): a severity, a stable code, a message, and optional details;
+- inputs carry the host's trace context, which the plugin forwards on its own HTTP calls.
+
+The host is meant to do the rest: wrap each plugin call in a span, export it, and send events to the UI, Kubernetes Events and MCP results. **No deckwatch version supports either yet** (checked at `fc03ec2`). It ignores `events`, sends no `trace_context`, and only logs the legacy fields that the helpers below also fill in: `errors`, `warnings`, and the deprovision `message`.
+
+### Reporting events
+
+Add events with the helpers on [`PluginResult`](#pluginresult), [`ResourceProvisionResult`](#resourceprovisionresult) and [`ResourceDeprovisionResult`](#resourcedeprovisionresult) rather than pushing to `events` directly. Each helper also copies the event into the legacy fields that older hosts read, so they still log it:
+
+| Helper | Severity | Copied to, on `PluginResult` and `ResourceProvisionResult` | Copied to, on `ResourceDeprovisionResult` |
+|---|---|---|---|
+| `info(code, message)` | `info` | nothing: there is no legacy field for it | `message` |
+| `warn(code, message)` | `warning` | `warnings` | `message`: there is no `warnings` field |
+| `error(code, message)` | `error` | `errors` | `errors` |
+| `push_event(event)` | the event's | by severity, as above; `unknown` like `warning` | by severity, as above |
+
+- The copy is `event.legacy_text()`: `"<code>: <message>"`, or only the message when `code` is empty. On `message`, each copy is appended after `"; "`, unless `message` was empty.
+- Only the code and message are copied. `resource_id`, `object`, `retryable` and `hint` exist only in `events`.
+- Each helper returns the stored `&mut PluginEvent`, so you can set the optional fields. Changing the event afterwards doesn't change its copy.
+
+```rust
+use deckwatch_plugin_sdk::PluginResult;
+
+fn report(result: &mut PluginResult) {
+    result.warn("vault.addr_default", "VAULT_ADDR is not set; using the default");
+    let event = result.error("vault.token_missing", "No Vault token is configured");
+    event.hint = Some("Set VAULT_TOKEN in the plugin's settings".into());
+    // result.warnings: ["vault.addr_default: VAULT_ADDR is not set; using the default"]
+    // result.errors:   ["vault.token_missing: No Vault token is configured"]
+}
+```
+
+**Codes** are stable identifiers that alerts and documentation can match on. Use `"<plugin-name>.<code>"`, e.g. `"aws.assume_role_failed"`, and keep a code's meaning when you reword its message. The `plugin.` prefix belongs to the host (see [`telemetry` constants](#telemetry-constants)).
+
+**Hosts that read `events`** should:
+
+- treat `unknown` as `warning`;
+- not report the copies twice: drop each `errors` or `warnings` entry that equals the `legacy_text()` of one of the result's events, and turn the remaining entries into events with code `plugin.unspecified`. On a deprovision result, the copies of info and warning events are at the end of `message`, in order, joined with `"; "`;
+- treat event text as untrusted: cap `message` (about 2 KB) and the number of events per call, and strip control characters.
+
+### Forwarding the trace
+
+[`PluginContext`](#plugincontext), [`ResourceProvisionRequest`](#resourceprovisionrequest) and [`ResourceDeprovisionRequest`](#resourcedeprovisionrequest) have a `trace_context`: the W3C `traceparent` of the host's span around the call. Their `trace_headers()` method returns `[("traceparent", <trace_context>)]` when the value is a valid version-00 `traceparent`, and nothing otherwise (no context, or a malformed one). Add those headers to every request the plugin makes, so its API calls join the host's trace:
+
+```rust
+use deckwatch_plugin_sdk::PluginContext;
+use extism_pdk::{http, FnResult, HttpRequest};
+
+fn get(ctx: &PluginContext, url: &str) -> FnResult<Vec<u8>> {
+    let mut req = HttpRequest::new(url).with_method("GET");
+    for (name, value) in ctx.trace_headers() {
+        req = req.with_header(name, value);
+    }
+    Ok(http::request::<()>(&req, None)?.body())
+}
+```
+
+`metadata()` takes no input, so it gets no trace context.
+
+### `telemetry` constants
+
+The `deckwatch_plugin_sdk::telemetry` module holds the names that hosts and plugins share.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `attribute::DECKWATCH_PLUGIN_NAME` | `deckwatch.plugin.name` | Span attribute: the plugin's name |
+| `attribute::DECKWATCH_PLUGIN_VERSION` | `deckwatch.plugin.version` | Span attribute: the plugin's version |
+| `attribute::DECKWATCH_PLUGIN_EXPORT` | `deckwatch.plugin.export` | Span attribute: the call, such as `apply`. The span is named `plugin {export}` |
+| `TRACEPARENT_HEADER` | `traceparent` | The header `trace_headers()` returns |
+| `code::RESERVED_PREFIX` | `plugin.` | Prefix of every host event code. Plugins must not use it |
+| `code::UNSPECIFIED` | `plugin.unspecified` | A legacy `errors`, `warnings` or `message` string, which has no code |
+| `code::FETCH_FAILED` | `plugin.fetch_failed` | The binary couldn't be fetched |
+| `code::CHECKSUM_MISMATCH` | `plugin.checksum_mismatch` | The binary doesn't match the configured `sha256` |
+| `code::LOAD_FAILED` | `plugin.load_failed` | The binary didn't load or instantiate |
+| `code::TRAP` | `plugin.trap` | The plugin trapped (for example, panicked) during a call |
+| `code::TIMEOUT` | `plugin.timeout` | The call ran past the host's time limit |
+| `code::OUTPUT_INVALID` | `plugin.output_invalid` | The output isn't valid JSON for the expected type. The message should include the deserializer's error path |
+| `code::K8S_APPLY_FAILED` | `plugin.k8s_apply_failed` | Applying a Kubernetes object the plugin returned failed |
+| `code::POLICY_REJECTED` | `plugin.policy_rejected` | A host policy refused something the plugin asked for |
+
 ---
 
 ## Type reference
@@ -336,6 +422,7 @@ Input to `apply()`. Derives `Default` (*0.10.0*).
 | `labels` | `HashMap<String, String>` | required | The pod template's `spec.template.metadata.labels` |
 | `plugin_outputs` | `HashMap<String, HashMap<String, String>>` | default | `outputs` of plugins that already ran in this invocation, keyed by plugin `name`. Empty on the reconcile path |
 | `provisioned_resources` | `HashMap<String, HashMap<String, String>>` | default | State of every provisioned resource in the application, keyed by `"{plugin_name}/{resource_id}"`. Filled only on the reconcile path; empty on create and update |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call. Forward it with `trace_headers()` (see [forwarding the trace](#forwarding-the-trace)). deckwatch doesn't send it yet (checked at `fc03ec2`) |
 
 On create and update, the context reflects the Deployment after the operator's changes and before any plugin runs.
 
@@ -356,6 +443,9 @@ Output of `apply()`. Derives `Default`; return `PluginResult::default()` to chan
 | `errors` | `Vec<String>` | default, omitted when empty | Logged at `ERROR`. Never blocks the Deployment |
 | `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
 | `init_containers` | `Vec<SidecarSpec>` | default, omitted when empty | *0.10.0.* Init containers for the pod. Appended, not prepended (see [how results are merged](#how-results-are-merged-create-and-update)) |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch ignores this field (checked at `fc03ec2`) |
+
+Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`; see [reporting events](#reporting-events).
 
 ### `WantsServiceAccount`
 
@@ -467,6 +557,7 @@ Input to `provision()`. Derives `Default` (*0.10.0*).
 | `namespace` | `String` | required | The application's namespace |
 | `resource_id` | `String` | required | A `PluginResource.id` from this plugin's metadata |
 | `fields` | `HashMap<String, String>` | required | Form values keyed by `ConfigField.key`. On refresh and re-polls, the values stored at provisioning time |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch doesn't send it yet (checked at `fc03ec2`) |
 
 ### `ResourceProvisionResult`
 
@@ -483,8 +574,9 @@ Output of `provision()`. Derives `Default`.
 | `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
 | `status` | `ProvisioningStatus` | default (`Pending`) | See [provisioning](#provisioning) for exactly what the host does with it |
 | `retry_after_secs` | `Option<u64>` | default, omitted when `None` | Minimum seconds before the host re-polls this resource. Honoured only by the background re-poll |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch ignores this field (checked at `fc03ec2`) |
 
-`errors` is always serialized, unlike `PluginResult.errors`.
+`errors` is always serialized, unlike `PluginResult.errors`. Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`, as on `PluginResult`.
 
 ### `ProvisioningStatus`
 
@@ -507,6 +599,7 @@ Input to `deprovision()`. Derives `Default` (*0.10.0*).
 | `resource_id` | `String` | required | The resource's `PluginResource.id` |
 | `state` | `HashMap<String, String>` | default | The stored `state` |
 | `fields` | `HashMap<String, String>` | default | The stored form values |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch doesn't send it yet (checked at `fc03ec2`) |
 
 ### `ResourceDeprovisionResult`
 
@@ -517,6 +610,9 @@ Output of `deprovision()`. Derives `Default`.
 | `errors` | `Vec<String>` | default | Logged at `ERROR`. The record is deleted anyway |
 | `message` | `String` | default | What was and wasn't cleaned up. Logged at `INFO`; the host doesn't show it in the UI |
 | `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. No deckwatch version supports this field yet (checked at `fc03ec2`); hosts ignore it |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. The [helpers](#reporting-events) copy errors into `errors` and every other severity into `message`. deckwatch ignores this field (checked at `fc03ec2`) |
+
+Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`; see [reporting events](#reporting-events).
 
 ### `KubernetesObjectRef`
 
@@ -542,6 +638,38 @@ What the SDK specifies for hosts that support the field (none yet; deckwatch ign
 - A ServiceAccount still used by a Deployment, CronJob or Job in the namespace is kept.
 - An object that is already gone counts as deleted.
 - Refusals and failures are logged and audited, and never block removal of the resource record.
+
+### `PluginEvent`
+
+*0.10.0.* A structured notice, warning or error, in the `events` of `PluginResult`, `ResourceProvisionResult` and `ResourceDeprovisionResult`. Derives `Default` and `PartialEq`. Every key may be missing (`#[serde(default)]` on the struct), so a partial event still parses instead of failing the whole result. Serialization always writes `severity`, `code`, `message` and `retryable`.
+
+| Field | Type | JSON | Description |
+|---|---|---|---|
+| `severity` | `EventSeverity` | default (`info`) | How serious the event is |
+| `code` | `String` | default | Stable machine code, `"<plugin-name>.<code>"`, e.g. `"aws.assume_role_failed"`. Codes that start with `plugin.` are reserved for the host |
+| `message` | `String` | default | Human-readable text. Hosts cap its length (about 2 KB). Don't put secrets in it: hosts log, store and export it |
+| `resource_id` | `Option<String>` | default, omitted when `None` | The `PluginResource.id` the event is about |
+| `object` | `Option<KubernetesObjectRef>` | default, omitted when `None` | The Kubernetes object, in the application's namespace, the event is about |
+| `retryable` | `bool` | default | Repeating the same call may succeed with nothing changed (throttling, a timeout), unlike a failure that needs a fix first |
+| `hint` | `Option<String>` | default, omitted when `None` | A suggested fix for the operator |
+
+| Constructor or method | Result |
+|---|---|
+| `PluginEvent::new(severity, code, message)` | An event with no optional fields set |
+| `event.legacy_text()` | `"<code>: <message>"`, or only the message when `code` is empty: the copy the helpers put in legacy fields |
+
+### `EventSeverity`
+
+*0.10.0.* Enum, serialized in `snake_case`. Derives `Default` (`Info`), `Copy`, `PartialEq` and `Eq`. `#[non_exhaustive]`: `match` on it needs a `_` arm.
+
+| JSON value | Variant | Meaning |
+|---|---|---|
+| `"info"` | `Info` (default) | Worth knowing; nothing is wrong |
+| `"warning"` | `Warning` | The call did its job, but something needs attention |
+| `"error"` | `Error` | Something the plugin was asked to do failed |
+| `"unknown"` | `Unknown` | Any other value. Hosts treat it as `warning` |
+
+**`Unknown` and forward compatibility.** Any severity this SDK doesn't recognise, such as one added by a newer SDK, deserializes to `Unknown` (`#[serde(other)]`) instead of failing. Without it, one new severity would make an older host reject the plugin's entire result. Matching is exact, so `"Error"` is `Unknown` too. `Unknown` serializes as `"unknown"`, not as the original string. Don't return it from a plugin.
 
 ---
 
@@ -584,6 +712,7 @@ Everything else in this section, and every [known host issue](#known-host-issues
 | `outputs` | passed to later plugins | ignored |
 | `deployment_annotations`, `deployment_labels` | **ignored** | applied with server-side apply (field manager `deckwatch-plugin-resources`) |
 | `errors`, `warnings` | logged | logged |
+| `events` (*0.10.0*) | ignored | ignored |
 
 If `apply()` traps or returns invalid JSON, the host logs an error and skips that plugin; the Deployment still goes ahead.
 
@@ -725,9 +854,9 @@ This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-un
 - The SDK follows semantic versioning within 0.x:
   - a **minor** bump (0.9 → 0.10) may break you: a removed or renamed type, field or constructor, a changed field type, or a higher minimum Rust version;
   - a **patch** bump only adds things or fixes bugs.
-- **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`.
+- **Wire compatibility.** Every field added to a type that crosses the boundary has a default, so an older host can read a newer plugin's output and vice versa. Unknown JSON keys are ignored on both sides; no type uses `deny_unknown_fields`. `ConfigFieldType` and `EventSeverity` also read values they don't know as `Unknown`, so a new variant doesn't break an older reader. `ProvisioningStatus` has no such catch-all.
 - **Source compatibility.** From 0.10.0:
-  - **Enum variants:** `ConfigFieldType` and `ProvisioningStatus` are `#[non_exhaustive]`, so the compiler requires a `_` arm in every `match`, and adding a variant is not a breaking change.
+  - **Enum variants:** `ConfigFieldType`, `ProvisioningStatus` and `EventSeverity` are `#[non_exhaustive]`, so the compiler requires a `_` arm in every `match`, and adding a variant is not a breaking change.
   - **Struct fields:** every struct derives `Default`. Build structs with `..Default::default()`, never with a literal that names every field, and new fields won't break your build. Adding a public field still counts as breaking in Rust's semver rules (it breaks full literals), so the SDK releases it in a minor version, and CI's `cargo semver-checks` enforces that.
 
   Upgrading from 0.9 to 0.10 needs a `_` arm in any exhaustive `match` on those enums, and updates to struct literals of changed types.

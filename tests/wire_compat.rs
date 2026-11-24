@@ -88,10 +88,32 @@ fn manifest() -> Value {
     json!({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "c", "namespace": "ns"}})
 }
 
+/// A valid W3C `traceparent` (version 00).
+const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
 /// Fully populated values of the current types.
 mod new {
     use super::*;
     use deckwatch_plugin_sdk::*;
+
+    /// One event of each severity a plugin returns, the first with every
+    /// optional field set. Built directly, not with the result helpers, so
+    /// the legacy fields stay identical to the old builders' data.
+    pub fn events() -> Vec<PluginEvent> {
+        vec![
+            PluginEvent {
+                severity: EventSeverity::Error,
+                code: "p.failed".into(),
+                message: "m".into(),
+                resource_id: Some("rds".into()),
+                object: Some(KubernetesObjectRef::service_account("sa")),
+                retryable: true,
+                hint: Some("h".into()),
+            },
+            PluginEvent::new(EventSeverity::Warning, "p.warned", "w"),
+            PluginEvent::new(EventSeverity::Info, "p.noted", "i"),
+        ]
+    }
 
     pub fn env_vars() -> Vec<EnvVarSpec> {
         vec![
@@ -189,6 +211,7 @@ mod new {
             labels: map(&[("l", "1")]),
             plugin_outputs: HashMap::from([("aws".into(), map(&[("role_arn", "arn")]))]),
             provisioned_resources: HashMap::from([("aws/rds".into(), map(&[("DB_HOST", "h")]))]),
+            trace_context: Some(TRACEPARENT.into()),
         }
     }
 
@@ -208,6 +231,7 @@ mod new {
             errors: strings(&["e"]),
             warnings: strings(&["w"]),
             init_containers: vec![sidecar()],
+            events: events(),
         }
     }
 
@@ -217,6 +241,7 @@ mod new {
             namespace: "ns".into(),
             resource_id: "rds".into(),
             fields: map(&[("f", "1")]),
+            trace_context: Some(TRACEPARENT.into()),
         }
     }
 
@@ -231,6 +256,7 @@ mod new {
             warnings: strings(&["w"]),
             status,
             retry_after_secs: Some(30),
+            events: events(),
         }
     }
 
@@ -241,6 +267,7 @@ mod new {
             resource_id: "rds".into(),
             state: map(&[("DB_HOST", "h")]),
             fields: map(&[("f", "1")]),
+            trace_context: Some(TRACEPARENT.into()),
         }
     }
 
@@ -252,6 +279,7 @@ mod new {
                 KubernetesObjectRef::service_account("sa"),
                 KubernetesObjectRef::job("j"),
             ],
+            events: events(),
         }
     }
 }
@@ -553,5 +581,186 @@ mod new_to_v0_3 {
     #[test]
     fn host_input() {
         new_to_old(&new::context(), &old03::context(), "PluginContext");
+    }
+}
+
+/// `events` and `trace_context` (0.10.0) across versions. The builders above
+/// already check that old readers ignore both; these tests pin the details.
+mod events_and_trace_context {
+    use super::*;
+    use deckwatch_plugin_sdk as n;
+
+    fn read<T: DeserializeOwned>(value: &impl Serialize) -> T {
+        serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap()
+    }
+
+    /// Old JSON has neither field: the new types read no events and no
+    /// trace context.
+    #[test]
+    fn old_json_has_no_events_or_trace_context() {
+        let results: [n::PluginResult; 2] = [read(&old09::result()), read(&old03::result())];
+        for r in results {
+            assert!(r.events.is_empty());
+        }
+        let r: n::ResourceProvisionResult =
+            read(&old09::provision_result(v0_9::ProvisioningStatus::Failed));
+        assert!(r.events.is_empty());
+        let r: n::ResourceDeprovisionResult = read(&old09::deprovision_result());
+        assert!(r.events.is_empty());
+
+        let contexts: [n::PluginContext; 2] = [read(&old09::context()), read(&old03::context())];
+        for c in contexts {
+            assert_eq!(c.trace_context, None);
+            assert!(c.trace_headers().is_empty());
+        }
+        let q: n::ResourceProvisionRequest = read(&old09::provision_request());
+        assert_eq!(q.trace_context, None);
+        let q: n::ResourceDeprovisionRequest = read(&old09::deprovision_request());
+        assert_eq!(q.trace_context, None);
+    }
+
+    /// What an older host sees of events added with the helpers: the legacy
+    /// copies.
+    #[test]
+    fn old_hosts_see_the_helpers_legacy_copies() {
+        let mut r = n::PluginResult::default();
+        r.info("p.noted", "i");
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        let old: v0_9::PluginResult = read(&r);
+        assert_eq!(old.warnings, ["p.warned: w"]);
+        assert_eq!(old.errors, ["p.failed: e"]);
+
+        let mut r = n::ResourceProvisionResult::default();
+        r.info("p.noted", "i");
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        let old: v0_9::ResourceProvisionResult = read(&r);
+        assert_eq!(old.warnings, ["p.warned: w"]);
+        assert_eq!(old.errors, ["p.failed: e"]);
+
+        let mut r = n::ResourceDeprovisionResult {
+            message: "Deleted IAM role".into(),
+            ..Default::default()
+        };
+        r.info("p.noted", "i");
+        r.warn("p.warned", "w");
+        r.error("p.failed", "e");
+        let old: v0_9::ResourceDeprovisionResult = read(&r);
+        assert_eq!(old.message, "Deleted IAM role; p.noted: i; p.warned: w");
+        assert_eq!(old.errors, ["p.failed: e"]);
+    }
+
+    /// A severity from a newer SDK reads as `Unknown`, in every result, and
+    /// the rest of the result survives.
+    #[test]
+    fn unknown_severity_parses_as_unknown() {
+        let events = json!([
+            {"severity": "critical", "code": "p.future", "message": "m", "retryable": true},
+            {"severity": "error", "code": "p.failed", "message": "e"}
+        ]);
+        let check = |events: &[n::PluginEvent]| {
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0].severity, n::EventSeverity::Unknown);
+            assert_eq!(events[0].code, "p.future");
+            assert!(events[0].retryable);
+            assert_eq!(events[1].severity, n::EventSeverity::Error);
+        };
+
+        let r: n::PluginResult =
+            serde_json::from_value(json!({"errors": ["e"], "events": events})).unwrap();
+        check(&r.events);
+        assert_eq!(r.errors, ["e"]);
+        let r: n::ResourceProvisionResult = serde_json::from_value(
+            json!({"state": {"K": "v"}, "status": "Available", "events": events}),
+        )
+        .unwrap();
+        check(&r.events);
+        assert_eq!(r.status, n::ProvisioningStatus::Available);
+        let r: n::ResourceDeprovisionResult =
+            serde_json::from_value(json!({"message": "m", "events": events})).unwrap();
+        check(&r.events);
+        assert_eq!(r.message, "m");
+    }
+
+    /// The exact JSON of a result with events: the contract deckwatch mirrors
+    /// by hand. Old readers ignore `events` and get the legacy copies.
+    #[test]
+    fn result_with_events_json() {
+        let mut r = n::PluginResult::default();
+        r.warn("aws.tag_missing", "CostCenter tag is not set").hint =
+            Some("Add CostCenter to RESOURCE_TAGS".into());
+        let e = r.error("aws.assume_role_failed", "AssumeRole failed: AccessDenied");
+        e.object = Some(n::KubernetesObjectRef::service_account("shop-aws-sa"));
+        e.retryable = true;
+
+        let expected = json!({
+            "env_vars": [],
+            "sidecars": [],
+            "kubernetes_resources": [],
+            "outputs": {},
+            "deployment_annotations": {},
+            "deployment_labels": {},
+            "errors": ["aws.assume_role_failed: AssumeRole failed: AccessDenied"],
+            "warnings": ["aws.tag_missing: CostCenter tag is not set"],
+            "events": [
+                {
+                    "severity": "warning",
+                    "code": "aws.tag_missing",
+                    "message": "CostCenter tag is not set",
+                    "retryable": false,
+                    "hint": "Add CostCenter to RESOURCE_TAGS"
+                },
+                {
+                    "severity": "error",
+                    "code": "aws.assume_role_failed",
+                    "message": "AssumeRole failed: AccessDenied",
+                    "object": {"api_version": "v1", "kind": "ServiceAccount", "name": "shop-aws-sa"},
+                    "retryable": true
+                }
+            ]
+        });
+        assert_eq!(serde_json::to_value(&r).unwrap(), expected);
+        let back: n::PluginResult = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(back.events, r.events);
+
+        let old: v0_9::PluginResult = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(old.errors, r.errors);
+        assert_eq!(old.warnings, r.warnings);
+        let _: v0_3::PluginResult = serde_json::from_value(expected).unwrap();
+    }
+
+    /// The exact JSON of a context with a trace context. Old readers ignore
+    /// `trace_context`.
+    #[test]
+    fn context_with_trace_context_json() {
+        let ctx = n::PluginContext {
+            namespace: "shop".into(),
+            deployment_name: "api".into(),
+            annotations: map(&[("myorg.io/vault", "enabled")]),
+            labels: map(&[("app", "api")]),
+            trace_context: Some(TRACEPARENT.into()),
+            ..Default::default()
+        };
+        let expected = json!({
+            "namespace": "shop",
+            "deployment_name": "api",
+            "annotations": {"myorg.io/vault": "enabled"},
+            "labels": {"app": "api"},
+            "plugin_outputs": {},
+            "provisioned_resources": {},
+            "trace_context": TRACEPARENT
+        });
+        assert_eq!(serde_json::to_value(&ctx).unwrap(), expected);
+        let back: n::PluginContext = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(
+            back.trace_headers(),
+            [("traceparent", TRACEPARENT.to_string())]
+        );
+
+        let old: v0_9::PluginContext = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(old.namespace, "shop");
+        let old: v0_3::PluginContext = serde_json::from_value(expected).unwrap();
+        assert_eq!(old.deployment_name, "api");
     }
 }

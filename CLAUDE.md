@@ -23,7 +23,8 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ## What's here
 
-- **`src/lib.rs`** (~950 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
+- **`src/lib.rs`** (~2,150 lines, about a third of it tests) holds the wire types and their helpers, one host function, and unit tests (`mod tests`, ~45 tests). Keep every public `struct` and `enum` here: `tests/readme.rs` only scans this file.
+- **`src/telemetry.rs`** is the `telemetry` module (0.10.0): names shared with the host (span attributes, host-reserved event codes, the `traceparent` header) and the `traceparent` check behind `trace_headers()`. Constants only, no types.
 - **`tests/wire_compat.rs`** checks wire compatibility with the v0.9.0 and v0.3.0 releases in both directions (rule 6). The old releases are dev-dependencies (`v0_9`, `v0_3`), so plugins never see them.
 - **`tests/readme.rs`** checks that the README's type reference lists exactly the JSON keys and variants of every public type (rule 10).
 - **`README.md`** is the plugin author's reference: exports, sandbox, every field, and deckwatch's actual host behaviour and known host issues.
@@ -41,16 +42,18 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | `ConfigField`, `ConfigFieldType` | Plugin config schema entries | `:253`, `:236` |
 | `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch has its own `validate_key_value_field` (`278de71`); `KeyValue`/`Unknown` landed in deckwatch `main` before this SDK (rule 2 reversed) |
 | `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:281` |
-| `PluginContext` | Input to `apply()`: namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources` | `:36` |
-| `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings | `:77` |
+| `PluginContext` | Input to `apply()` (also on deckwatch's `validate_plugin` dry run): namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources`, `trace_context` (0.10.0) with `trace_headers()` | `:36` (**behind**: no `trace_context` yet) |
+| `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings, `events` (0.10.0) with the event helpers | `:77` (**behind**: no `events` yet) |
 | `WantsServiceAccount` | Structured ServiceAccount request inside `PluginResult` | `:68` |
 | `EnvVarSpec`, `EnvVarSource`, `SecretKeyRef`, `ConfigMapKeyRef` | Container env vars, with `value` / `secret_key_ref` / `config_map_key_ref` constructors | `:134`; deckwatch names the others `EnvVarSourceSpec` `:143`, `SecretKeyRefSpec` `:151`, `ConfigMapKeyRefSpec` `:157` |
 | `SidecarSpec` | Sidecar or init container to inject; volumes, mounts, split requests/limits (0.10.0) | `:187` |
 | `VolumeSpec`, `VolumeMountSpec` | Pod volumes and container mounts for sidecars (0.10.0) | `:165`, `:177` |
 | `PluginResource` | A resource type a plugin can provision (fields, `singleton`, `output_keys`) | `:336` |
-| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output | `:354` / `:364` |
-| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output | `:399` / `:429` (**behind**: no `delete_kubernetes_resources` yet) |
-| `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
+| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output; `trace_context` / `events` (0.10.0) | `:354` / `:364` (**behind**: neither yet) |
+| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output; `trace_context` / `events` (0.10.0) | `:399` / `:429` (**behind**: no `trace_context`, `delete_kubernetes_resources` or `events` yet) |
+| `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete, or for a `PluginEvent` to point at; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
+| `PluginEvent`, `EventSeverity` | Structured events (0.10.0) in the three results' `events`. `info`/`warn`/`error`/`push_event` on each result also copy an event into `errors`, `warnings` or (deprovision) `message`, as `PluginEvent::legacy_text()` (rule 14). `EventSeverity::Unknown` is the catch-all (rule 13) | not mirrored yet (SDK-first, 0.10.0) |
+| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | not mirrored yet (SDK-first, 0.10.0) |
 | `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:416` |
 
 deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch. Re-check drift with a field-level diff of both files whenever either side changes; PLAN Phase 3 turns that into CI.
@@ -74,6 +77,8 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
     - Where the host contradicts its own types or docs, list it under "Known host issues" rather than documenting the intent.
 11. **Compile README examples before publishing them.** Build a scratch plugin crate from the snippets (wasm32 build plus host `cargo test`). That's how we learned that `crate-type = ["cdylib", "rlib"]` breaks host tests with a link error while `["cdylib"]` alone works. The break only happens when the `#[plugin_fn]` exports are compiled for the host too; plugins that gate them with `#[cfg(target_arch = "wasm32")]` link fine. Test claims like this both ways before writing them down.
 12. **Every public struct derives `Default`, and every public enum is `#[non_exhaustive]`** (since 0.10.0). Adding an enum variant is then non-breaking. Adding a struct field still counts as breaking under Rust semver (`cargo semver-checks` flags it as `constructible_struct_adds_field`, because full struct literals stop compiling), so it needs a minor bump; `Default` just means plugins that use `..Default::default()` aren't affected. Don't make structs `#[non_exhaustive]`: plugins couldn't build them at all. A new struct without `Default`, or a new enum without `#[non_exhaustive]`, brings back avoidable breakage. Add new types to the round-trip test `every_struct_default_round_trips` too.
+13. **An enum that plugins send to the host needs a `#[serde(other)] Unknown` catch-all** (`ConfigFieldType`, and `EventSeverity` from the start). Without one, an older host that meets a newer variant fails to parse the *whole* value it's in, not just that field: one new `field_type` used to cost a plugin every config field it declared, and one new severity would cost the whole `apply()` result. `#[non_exhaustive]` is the source half of this rule; `#[serde(other)]` is the wire half. Each `Unknown` has a documented host meaning (`EventSeverity::Unknown` is treated as `Warning`; `ConfigFieldType::Unknown` renders as a text input), serializes as `"unknown"` (lossy), and plugins must not return it. `ProvisioningStatus` has no catch-all, so a new variant there breaks every existing host: add `Unknown` in one release, and send the new variant only once hosts have it. For the same reason, a struct that appears in lists inside plugin output gets `#[serde(default)]` on the container (`PluginEvent`), so one partial entry can't sink the result.
+14. **The event helpers' legacy copies are a contract.** A host that reads `events` drops each `errors`/`warnings` entry equal to an event's `PluginEvent::legacy_text()` (`"<code>: <message>"`, or the message when `code` is empty), and the copies at the end of a deprovision `message` (joined with `"; "`), instead of reporting each problem twice. Changing that format, the separator or the severity-to-field mapping is a wire change. Info events have no legacy field on `PluginResult` and `ResourceProvisionResult`, so older hosts never see them.
 
 ## Commands
 
