@@ -4,6 +4,12 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 "Wire" means the JSON exchanged with deckwatch; "source" means Rust code that uses these types. Plugins pin the SDK by tag (`tag = "vX.Y.Z"`), so each section below corresponds to a git tag.
 
+## [0.10.1] - Unreleased
+
+### Documentation
+
+- README, "The sandbox": a request that extism can't make traps the whole export call, and the plugin can't catch it. That covers a host not in `allowed_hosts`, a bad URL, DNS or connection failures, and timeouts. Also what deckwatch does with each export when that happens. Found while building deckwatch-plugin-example's webhook.
+
 ## [0.10.0] - 2026-11-24
 
 0.10.0 catches the SDK up with deckwatch's own copy of these types: sidecar volumes and mounts, split resource requests and limits, init containers, and `min_deckwatch_version`. It also adds structured plugin events and W3C trace context, and a `key_value` config field type. Future additions break plugins less: every struct derives `Default`, and enums are `#[non_exhaustive]`. Upgrading is a mechanical change in plugin code (below). It is wire-compatible with older hosts and plugins, except for `key_value`.
@@ -145,6 +151,7 @@ The `v0.5.1` tag's `Cargo.toml` still says 0.5.0.
 
 The initial `PluginContext`, `PluginResult`, `EnvVarSpec` and `SidecarSpec`. There is no `v0.1.0` tag; it is part of `v0.2.0`'s history.
 
+[0.10.1]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.10.0...main
 [0.10.0]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.8.1...v0.8.2
