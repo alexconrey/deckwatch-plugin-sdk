@@ -28,7 +28,7 @@
 //! See the [README](https://github.com/alexconrey/deckwatch-plugin-sdk) for full
 //! build, test, and release instructions.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -112,8 +112,22 @@ pub enum ConfigFieldType {
     Secret,
     /// Checkbox. Stored as `"true"` or `"false"`.
     Bool,
+    /// A set of key/value pairs, edited as one row per pair (e.g. resource
+    /// tags). Stored in plugin config as a JSON object of string keys to string
+    /// values, e.g. `{"Team":"platform","CostCenter":"1234"}`. An empty value
+    /// means no pairs. Read it with [`parse_key_value_field`].
+    KeyValue,
     /// Dropdown. The field must have a non-empty `options` list.
     Select,
+    /// A field type this version of the SDK doesn't know.
+    ///
+    /// Deserializing an unrecognised `field_type` yields this variant instead of
+    /// an error, so a host built against an older SDK can still load a newer
+    /// plugin's metadata. Without it, one new field type makes the whole
+    /// `metadata()` fail to parse, and the host loses every config field and
+    /// resource the plugin declares. Hosts should render it as a plain text input.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A single field in a plugin's self-declared configuration schema.
@@ -151,6 +165,39 @@ pub struct ConfigField {
     /// config key is then the variable name) or `inherit_env_file_keys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_source: Option<String>,
+}
+
+/// Parse the stored value of a [`ConfigFieldType::KeyValue`] field.
+///
+/// The value is a JSON object of string keys to string values. An empty or
+/// whitespace-only value means no pairs. Anything else (invalid JSON, an array,
+/// non-string values) is an error, so plugins can report a misconfiguration
+/// instead of silently ignoring it.
+///
+/// ```
+/// use deckwatch_plugin_sdk::parse_key_value_field;
+///
+/// let pairs = parse_key_value_field(r#"{"Team":"platform","CostCenter":"1234"}"#).unwrap();
+/// assert_eq!(pairs.get("Team").map(String::as_str), Some("platform"));
+/// assert!(parse_key_value_field("").unwrap().is_empty());
+/// assert!(parse_key_value_field("Team=platform").is_err());
+/// ```
+pub fn parse_key_value_field(raw: &str) -> Result<BTreeMap<String, String>, String> {
+    if raw.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("not a JSON object: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "expected a JSON object of string keys to string values".to_string())?;
+    object
+        .iter()
+        .map(|(k, v)| match v {
+            serde_json::Value::String(s) => Ok((k.clone(), s.clone())),
+            other => Err(format!("value for {k:?} must be a string, got {other}")),
+        })
+        .collect()
 }
 
 /// A field that an operator fills in to tune MCP guidance for a specific plugin.
@@ -843,6 +890,62 @@ mod tests {
             serde_json::to_string(&ConfigFieldType::Select).unwrap(),
             "\"select\""
         );
+    }
+
+    #[test]
+    fn key_value_field_type_is_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ConfigFieldType::KeyValue).unwrap(),
+            "\"key_value\""
+        );
+        let back: ConfigFieldType = serde_json::from_str("\"key_value\"").unwrap();
+        assert_eq!(back, ConfigFieldType::KeyValue);
+    }
+
+    // A field type the host doesn't know must not make the plugin's whole
+    // metadata unparseable (the host would lose every field and resource).
+    #[test]
+    fn unrecognised_field_type_deserializes_as_unknown() {
+        let back: ConfigFieldType = serde_json::from_str("\"color_picker\"").unwrap();
+        assert_eq!(back, ConfigFieldType::Unknown);
+
+        let meta: PluginMetadata = serde_json::from_str(
+            r#"{"name":"p","config_schema":[
+                {"key":"A","label":"A","field_type":"string"},
+                {"key":"B","label":"B","field_type":"some_future_type"}
+            ]}"#,
+        )
+        .expect("metadata with a future field type must still parse");
+        assert_eq!(meta.config_schema.len(), 2);
+        assert_eq!(meta.config_schema[0].field_type, ConfigFieldType::String);
+        assert_eq!(meta.config_schema[1].field_type, ConfigFieldType::Unknown);
+    }
+
+    #[test]
+    fn parse_key_value_field_accepts_objects_and_empty() {
+        let pairs = parse_key_value_field(r#"{"Team":"platform","CostCenter":"1234"}"#).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs["Team"], "platform");
+        assert_eq!(pairs["CostCenter"], "1234");
+        assert!(parse_key_value_field("").unwrap().is_empty());
+        assert!(parse_key_value_field("   ").unwrap().is_empty());
+        assert!(parse_key_value_field("{}").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_key_value_field_rejects_non_objects_and_non_strings() {
+        for bad in [
+            "Team=platform",
+            r#"["Team","platform"]"#,
+            r#"{"Count":3}"#,
+            r#"{"Nested":{"a":"b"}}"#,
+            "{not json",
+        ] {
+            assert!(
+                parse_key_value_field(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
     }
 
     #[test]

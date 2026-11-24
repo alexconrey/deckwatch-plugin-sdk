@@ -38,6 +38,7 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | host side, not a type |
 | `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields | `:300` (**ahead**: `min_deckwatch_version`) |
 | `ConfigField`, `ConfigFieldType` | Plugin config schema entries | `:253`, `:236` |
+| `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch has its own `validate_key_value_field` (`278de71`); `KeyValue`/`Unknown` landed in deckwatch `main` before this SDK (rule 2 reversed) |
 | `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:281` |
 | `PluginContext` | Input to `apply()`: namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources` | `:36` |
 | `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings | `:77` (**ahead**: `init_containers`) |
