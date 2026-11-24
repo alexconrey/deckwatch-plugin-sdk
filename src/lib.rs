@@ -73,16 +73,17 @@ pub struct WantsServiceAccount {
 
 /// Provisioning lifecycle status of a plugin-managed infrastructure resource.
 ///
-/// Returned by the plugin's `provision()` export to signal whether the resource
-/// is ready, still being created, or has failed. Deckwatch uses this to drive
-/// the polling loop in `reconcile_pending_resources`:
+/// Returned in [`ResourceProvisionResult::status`]. Serialized as the variant
+/// name (`"Pending"`, `"Available"`, `"Failed"`), not snake_case.
 ///
-/// - `Pending`   → re-poll next cycle (respecting `retry_after_secs`)
-/// - `Available` → resource is fully provisioned; stop polling
-/// - `Failed`    → surface in the UI and stop polling
+/// In deckwatch 0.6.7 this does **not** decide whether a resource is re-polled:
+/// the host re-polls resources whose stored `state` looks pending (a `*_STATUS`
+/// key with an in-progress value, or `DB_ENGINE`/`DB_STATUS` without
+/// `DB_HOST`). On a re-poll, `Available` and `Failed` results are always
+/// stored, and a `Pending` result only if it adds `state` keys or no longer
+/// looks pending. See the README's "Provisioning" section.
 ///
-/// Old plugins that do not emit this field default to `Pending` so the
-/// existing magic-string heuristics (`is_pending`) continue to work.
+/// Old plugins that do not emit this field deserialize to `Pending`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ProvisioningStatus {
     /// Resource creation is still in progress.
@@ -90,7 +91,7 @@ pub enum ProvisioningStatus {
     Pending,
     /// Resource is fully provisioned and available.
     Available,
-    /// Resource provisioning failed — check `errors` for details.
+    /// Resource provisioning failed. Explain why in `errors`.
     Failed,
 }
 
@@ -104,8 +105,10 @@ pub enum ConfigFieldType {
     /// Plain text input. Stored in plugin config as-is.
     #[default]
     String,
-    /// Masked text input. Stored encrypted in `PluginConfig.config` using the
-    /// same AES-256-GCM envelope as `DeckwatchSettings.credentials`.
+    /// Masked text input. Values saved through the settings form are stored
+    /// AES-256-GCM encrypted when deckwatch has `DECKWATCH_ENCRYPTION_KEY`
+    /// set. deckwatch 0.6.7 does not decrypt them before calling the plugin
+    /// (see the README's "Known host issues").
     Secret,
     /// Checkbox. Stored as `"true"` or `"false"`.
     Bool,
@@ -121,8 +124,8 @@ pub enum ConfigFieldType {
 /// plugin is required in the deckwatch core.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigField {
-    /// Machine-readable key. Must be a valid extism config key (alphanumeric + `_`).
-    /// Matched against keys in `PluginConfig.config` and `inherit_env_keys`.
+    /// Config key. The saved value reaches the plugin under this key
+    /// (`extism_pdk::config::get(key)`). Use letters, digits and `_`.
     pub key: String,
     /// Human-readable label for the settings form.
     pub label: String,
@@ -131,19 +134,21 @@ pub struct ConfigField {
     pub description: String,
     /// The type of form control to render.
     pub field_type: ConfigFieldType,
-    /// Default value rendered in the form when no saved value exists.
-    /// For `secret` fields this is typically `None`.
+    /// Value pre-filled in the form when nothing is saved. The host does not
+    /// pass it to the plugin, so treat a missing key as "use the default".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
-    /// Whether the field must be non-empty before deckwatch accepts settings.
+    /// The settings form refuses to save without a value. Enforced only in
+    /// the UI; the host API does not check it.
     #[serde(default)]
     pub required: bool,
     /// Allowed values for `select` fields. Ignored for other field types.
     #[serde(default)]
     pub options: Vec<String>,
-    /// When `Some`, this field is populated from an environment variable rather
-    /// than direct user input. The value is the env var name. The UI renders
-    /// the field as read-only with a badge showing the source name.
+    /// Display only: the UI renders the field read-only with a badge naming
+    /// this environment variable. The host does not read it. To receive the
+    /// value, the operator lists the variable in `inherit_env_keys` (the
+    /// config key is then the variable name) or `inherit_env_file_keys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_source: Option<String>,
 }
@@ -152,8 +157,9 @@ pub struct ConfigField {
 ///
 /// Plugins declare these in [`PluginMetadata::mcp_tuning_fields`] to describe
 /// org-specific conventions (naming schemes, preferred instance classes, etc.)
-/// that the AI agent should follow. Deckwatch reads the saved values at MCP
-/// `initialize` time and prepends them to the session instructions as:
+/// that the AI agent should follow. For each field with a non-empty saved
+/// value, deckwatch appends a line to the MCP `initialize` instructions, in a
+/// block per plugin:
 ///
 /// ```text
 /// [Plugin: AWS]
@@ -172,16 +178,18 @@ pub struct McpTuningField {
     /// Example value shown as the input placeholder when no value is saved.
     #[serde(default)]
     pub placeholder: String,
-    /// Default value pre-filled in the form. `None` means no pre-fill.
+    /// Value pre-filled in the form. `None` means no pre-fill. Not used
+    /// otherwise: unsaved fields are left out of the instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
 }
 
 /// Static metadata returned by the `metadata()` export.
 ///
-/// Deckwatch calls this once at plugin load time to build the dependency graph
-/// and sort plugins before any `apply()` calls happen. Operators never need to
-/// think about ordering — deckwatch resolves it automatically.
+/// Deckwatch calls this once at plugin load time. The export is optional: if
+/// it is missing or fails, deckwatch uses `PluginMetadata::default()` with
+/// `name` set to the plugin's configured name. Before each run, deckwatch
+/// orders plugins by `provides`, `depends_on` and `optional_depends_on`.
 ///
 /// # Capability IDs
 ///
@@ -195,24 +203,26 @@ pub struct McpTuningField {
 /// third-party plugins.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginMetadata {
-    /// Plugin display name (for logs and UI).
+    /// Display name for logs, the UI and the MCP tuning block.
     pub name: String,
     /// Plugin version string (e.g. from `env!("CARGO_PKG_VERSION")`).
+    /// Informational; the host never checks it.
     #[serde(default)]
     pub version: String,
     /// Human-readable description.
     #[serde(default)]
     pub description: String,
-    /// Capability IDs this plugin produces, available to downstream plugins
-    /// via `ctx.plugin_outputs["<plugin-name>"]`.
+    /// Capability IDs this plugin provides. Used only for ordering and for
+    /// other plugins' `depends_on` checks. (Data for later plugins goes in
+    /// [`PluginResult::outputs`], keyed by plugin name, not capability.)
     #[serde(default)]
     pub provides: Vec<String>,
-    /// Capabilities that **must** be present — deckwatch skips this plugin
-    /// with an error if none of the loaded plugins provides them.
+    /// Capabilities that **must** be provided by some loaded plugin. If any
+    /// of them is missing, deckwatch skips this plugin and logs an error.
     #[serde(default)]
     pub depends_on: Vec<String>,
-    /// Capabilities that improve behaviour if present but are not required —
-    /// the plugin runs in reduced-functionality mode if unmet.
+    /// Capabilities that, when provided, must run before this plugin. They
+    /// only affect ordering; an unmet one is not an error.
     #[serde(default)]
     pub optional_depends_on: Vec<String>,
     /// Schema for this plugin's operator-supplied configuration.
@@ -231,9 +241,8 @@ pub struct PluginMetadata {
     /// Operator-facing fields for MCP-level guidance tuning.
     ///
     /// Deckwatch reads these at load time to render a "Plugin MCP Tuning"
-    /// subsection in Settings. Admin-saved values are injected into every MCP
-    /// `initialize` response as a `[Plugin: {name}]` block so the AI agent
-    /// always sees current naming conventions and org constraints.
+    /// subsection in Settings. Saved values are appended to every MCP
+    /// `initialize` response as a `[Plugin: {name}]` block.
     ///
     /// Old plugins that do not export this field deserialize to an empty `Vec`.
     #[serde(default)]
@@ -257,25 +266,27 @@ pub struct PluginResource {
     /// Human-readable description shown in the provisioning dialog.
     #[serde(default)]
     pub description: String,
-    /// If true, only one instance of this resource may exist per application.
-    /// The "+" button is hidden once provisioned.
+    /// If true, only one instance of this resource may exist per application:
+    /// the UI hides the "+" button and the host refuses a second one.
     #[serde(default)]
     pub singleton: bool,
     /// Form fields the operator fills out when provisioning.
     /// Reuses [`ConfigField`] — same type/label/required/default semantics.
     #[serde(default)]
     pub fields: Vec<ConfigField>,
-    /// Env var keys this resource will emit into application state once provisioned.
-    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`.
-    /// Deckwatch uses this to display a "provides these env vars" preview in the UI.
+    /// The [`ResourceProvisionResult::state`] keys this resource will produce,
+    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`. Shown as a
+    /// "provides these env vars" preview in the UI; not enforced.
     #[serde(default)]
     pub output_keys: Vec<String>,
 }
 
 /// Request sent to the plugin's `provision()` WASM export.
 ///
-/// Built by deckwatch when an operator clicks "Add {resource.label}" and
-/// submits the provisioning form on the Application detail page.
+/// Built by deckwatch when an operator submits the provisioning form (or MCP
+/// `provision_resource`), on refresh, and on each background re-poll of a
+/// pending resource. On refresh and re-poll, `fields` holds the values stored
+/// at provisioning time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceProvisionRequest {
     /// Name of the application being provisioned for.
@@ -290,16 +301,20 @@ pub struct ResourceProvisionRequest {
 
 /// Result returned from the plugin's `provision()` WASM export.
 ///
-/// Deckwatch persists `state` to the `application_plugin_resources` table
-/// and injects its key-value pairs as env vars into all deployments and
-/// cronjobs in the application on the next reconcile cycle.
+/// Deckwatch stores `state`, `deployment_annotations` and `sidecars` with the
+/// resource and applies them to the application's workloads on its reconcile
+/// loop (every 10 s in deckwatch 0.6.7).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceProvisionResult {
-    /// Persisted at application level. Keys become env vars injected into
-    /// all deployments and cronjobs in the application.
+    /// Stored with the resource. Each key becomes a plain env var in the
+    /// first container of every Deployment and CronJob labelled
+    /// `deckwatch.io/application=<application>`. The map is passed back in
+    /// [`ResourceDeprovisionRequest::state`] and
+    /// [`PluginContext::provisioned_resources`].
     #[serde(default)]
     pub state: HashMap<String, String>,
-    /// Annotations to stamp on every deployment in the application.
+    /// Annotations to stamp on every Deployment (not CronJob) in the
+    /// application.
     ///
     /// Keys should be namespaced (e.g. `"deckwatch.io/aws-s3-bucket"`).
     /// Deckwatch persists these alongside `state` and patches
@@ -312,22 +327,25 @@ pub struct ResourceProvisionResult {
     pub deployment_annotations: HashMap<String, String>,
     /// Sidecar containers to inject into every deployment in the application.
     ///
-    /// Deckwatch persists these alongside `state` and patches
-    /// `spec.template.spec.containers` on all application deployments during
-    /// the next reconciler cycle. The container `name` field is used as the
-    /// key for server-side apply — adding the same sidecar twice is idempotent,
-    /// and removing the resource causes the sidecar to be removed on the next
-    /// reconcile.
+    /// Deckwatch stores these alongside `state` and server-side applies them
+    /// to `spec.template.spec.containers` of the application's Deployments and
+    /// CronJobs on each reconcile. The container `name` is the merge key, so
+    /// applying the same sidecar twice is idempotent. In deckwatch 0.6.7 the
+    /// sidecars' env vars lose `value_from` on this path, and deleting the
+    /// application's last resource does not remove them.
     ///
     /// Use this to inject process sidecars (Redis, PostgreSQL, Fluent Bit, etc.)
     /// that should run alongside every workload in the application.
     /// Old plugins that do not emit this field deserialize to an empty vec.
     #[serde(default)]
     pub sidecars: Vec<SidecarSpec>,
-    /// Any Kubernetes resources to apply (e.g. a ServiceAccount with IRSA annotation).
+    /// Kubernetes objects to server-side apply (e.g. a ServiceAccount with an
+    /// IRSA annotation), with the same rules as
+    /// [`PluginResult::kubernetes_resources`].
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
-    /// Errors to surface in deckwatch logs and UI.
+    /// Logged at `ERROR` after `provision()` returns. Provisioning still
+    /// succeeds.
     #[serde(default)]
     pub errors: Vec<String>,
     /// Non-fatal warnings to surface in deckwatch logs.
@@ -338,35 +356,38 @@ pub struct ResourceProvisionResult {
     /// Old plugins deserialize to an empty vec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    /// Provisioning lifecycle status.
-    ///
-    /// `Pending` means the resource is still being created and deckwatch
-    /// should re-poll. `Available` means fully provisioned. `Failed` surfaces
-    /// the failure in the UI. Old plugins that do not emit this field
-    /// deserialize to `Pending` (the existing retry behaviour is preserved).
+    /// Provisioning lifecycle status. See [`ProvisioningStatus`] for what
+    /// deckwatch 0.6.7 actually does with it (it does not, by itself, cause
+    /// or stop re-polling). Old plugins that do not emit this field
+    /// deserialize to `Pending`.
     #[serde(default)]
     pub status: ProvisioningStatus,
     /// Minimum seconds to wait before deckwatch re-polls this resource.
     ///
-    /// Plugins should return this for long-running provisioning operations
-    /// (e.g. RDS creation takes several minutes). Deckwatch skips re-polling
-    /// the resource until `updated_at + retry_after_secs > now`.
-    /// `None` means poll every cycle (the existing behaviour).
+    /// Return this for long-running operations (e.g. RDS creation takes
+    /// several minutes). The background re-poll skips the resource while
+    /// `updated_at + retry_after_secs > now`. `None` means re-poll every
+    /// cycle. Ignored on submit and refresh; a refresh clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u64>,
 }
 
 /// Input to a plugin's `deprovision()` WASM export.
 ///
-/// Deckwatch calls this before removing the resource record from the DB,
-/// passing the persisted state and original form fields so the plugin knows
-/// what to clean up. The plugin decides whether to actually delete the cloud
+/// Deckwatch calls this when an operator deletes the resource, before
+/// removing its record, passing the stored state and form fields so the
+/// plugin knows what to clean up. The record is removed whatever the outcome,
+/// and a missing export counts as success. Deleting a Deployment or an
+/// application does not call `deprovision()`. The plugin decides whether to actually delete the cloud
 /// resource — for S3 buckets with data this is typically a no-op with a warning;
 /// for RDS the plugin can take a final snapshot then delete.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceDeprovisionRequest {
+    /// Name of the application the resource belongs to.
     pub application_name: String,
+    /// The application's Kubernetes namespace.
     pub namespace: String,
+    /// The resource's [`PluginResource::id`].
     pub resource_id: String,
     /// The state map persisted when the resource was provisioned
     /// (e.g. `{"S3_BUCKET": "myorg-uploads", "DB_HOST": "..."}`).
@@ -380,11 +401,11 @@ pub struct ResourceDeprovisionRequest {
 /// What the plugin returns from its `deprovision()` export.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceDeprovisionResult {
-    /// Errors to surface in deckwatch logs and UI. Does not block DB record removal.
+    /// Logged at `ERROR`. Does not block removal of the resource record.
     #[serde(default)]
     pub errors: Vec<String>,
-    /// Human-readable message shown to the operator in the UI after deprovisioning.
-    /// Use this to communicate what was and was not cleaned up.
+    /// What was and was not cleaned up. deckwatch 0.6.7 logs it at `INFO`;
+    /// it is not shown in the UI.
     #[serde(default)]
     pub message: String,
     /// Kubernetes objects for deckwatch to delete once `deprovision()` returns.
@@ -453,9 +474,9 @@ impl KubernetesObjectRef {
 /// Context passed to a plugin's `apply` function.
 ///
 /// Deckwatch serializes this as JSON and passes it as input to the WASM
-/// `apply` function. All fields are populated from the Deployment object
-/// **after** user-supplied changes are applied, so the plugin sees the
-/// operator's final intent before any plugin injection happens.
+/// `apply` function. On Deployment create and update, the fields reflect the
+/// Deployment **after** the operator's changes and before any plugin runs. On
+/// the reconcile loop they come from the live Deployment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginContext {
     /// Kubernetes namespace of the target deployment.
@@ -464,7 +485,7 @@ pub struct PluginContext {
     /// Name of the target deployment.
     pub deployment_name: String,
 
-    /// Deployment-level annotations.
+    /// The Deployment's `metadata.annotations` (not the pod template's).
     ///
     /// Use these as opt-in signals, e.g. `myorg.io/vault: "enabled"`.
     /// Keys and values are passed verbatim from the Kubernetes object.
@@ -475,7 +496,8 @@ pub struct PluginContext {
 
     /// Outputs from plugins that have already run this invocation, keyed by
     /// plugin **name** (the `name` field from `PluginMetadata`, which is also
-    /// the `name` field in `PluginConfig`).
+    /// the `name` field in `PluginConfig`). Empty on the reconcile loop,
+    /// where plugin outputs are not chained.
     ///
     /// Example — reading the IAM role ARN produced by `deckwatch-plugin-aws`:
     /// ```rust,ignore
@@ -506,7 +528,9 @@ pub struct PluginContext {
     /// }
     /// ```
     ///
-    /// Old hosts that do not populate this field deserialize to an empty map.
+    /// Filled only on the reconcile loop; empty on Deployment create and
+    /// update. Old hosts that do not populate this field deserialize to an
+    /// empty map.
     #[serde(default)]
     pub provisioned_resources: HashMap<String, HashMap<String, String>>,
 }
@@ -516,7 +540,12 @@ pub struct PluginContext {
 /// All fields default to empty / None. Return [`PluginResult::default()`] to
 /// inject nothing for this deployment.
 ///
-/// ### Conflict resolution
+/// Which fields deckwatch uses depends on the path: on Deployment create and
+/// update it uses everything except `deployment_annotations` and
+/// `deployment_labels`; on the reconcile loop it uses only those two (plus
+/// `errors` and `warnings`). See the README's "Host behaviour" section.
+///
+/// ### Conflict resolution (create and update)
 ///
 /// - **Env vars**: if a variable with the same `name` already exists on the
 ///   primary container, the plugin's value is silently skipped.
@@ -525,8 +554,10 @@ pub struct PluginContext {
 /// - **Kubernetes resources**: applied via server-side apply; conflicts are
 ///   resolved by the API server using field ownership rules.
 /// - **Service account**: only applied when the pod's current
-///   `serviceAccountName` is `None` or `"default"` — user-specified accounts
-///   are never overwritten.
+///   `serviceAccountName` is unset or `"default"`. User-specified accounts
+///   are never overwritten; between plugins, the first one wins.
+/// - **Removal**: none. Things a plugin stops returning, or injected by a
+///   plugin that is later disabled, stay in the Deployment.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginResult {
     /// Env vars to inject into the primary (first) container.
@@ -537,10 +568,11 @@ pub struct PluginResult {
     #[serde(default)]
     pub sidecars: Vec<SidecarSpec>,
 
-    /// Arbitrary Kubernetes resources to apply to the cluster via server-side
-    /// apply. Each element must be a valid Kubernetes object with `apiVersion`,
-    /// `kind`, and `metadata.name`. Resources are applied after the deployment
-    /// is committed; failures are logged but do not block the deployment.
+    /// Arbitrary Kubernetes objects to server-side apply (field manager
+    /// `deckwatch-plugin`, forced). Each needs `apiVersion`, `kind` and
+    /// `metadata.name`, plus `metadata.namespace` for namespaced kinds: the
+    /// host does not fill it in. They are applied after the Deployment is
+    /// saved; failures are logged and do not block the Deployment.
     ///
     /// Use this for infrastructure CRDs that should be created alongside the
     /// deployment — RDS instances, IAM ServiceAccounts, snapshot schedules, etc.
@@ -580,15 +612,17 @@ pub struct PluginResult {
     /// Annotations to stamp on the deployment's `metadata.annotations`.
     ///
     /// Keys should be namespaced (e.g. `"myorg.io/vault-injected": "true"`).
-    /// Deckwatch merges these into the deployment patch alongside the
-    /// plugin-env tracking annotations. Old plugins deserialize to an empty map.
+    /// deckwatch 0.6.7 applies these only on the reconcile loop (server-side
+    /// apply), which only covers applications with a provisioned resource;
+    /// Deployment create and update ignore them. Old plugins deserialize to an
+    /// empty map.
     #[serde(default)]
     pub deployment_annotations: HashMap<String, String>,
 
     /// Labels to stamp on the deployment's `metadata.labels`.
     ///
     /// Keys should be namespaced (e.g. `"myorg.io/managed-by-vault": "true"`).
-    /// Deckwatch includes these in the SSA patch `metadata.labels`.
+    /// Applied under the same conditions as `deployment_annotations`.
     /// Old plugins deserialize to an empty map.
     #[serde(default)]
     pub deployment_labels: HashMap<String, String>,
@@ -615,10 +649,12 @@ pub struct PluginResult {
     pub warnings: Vec<String>,
 }
 
-/// A single environment variable to inject into the primary container.
+/// An environment variable, for the primary container
+/// ([`PluginResult::env_vars`]) or a sidecar ([`SidecarSpec::env`]).
 ///
 /// Exactly one of `value` or `value_from` should be set. If both are set,
-/// `value_from` takes precedence.
+/// `value_from` takes precedence. deckwatch emits references with
+/// `optional: false`, so the pod won't start if the key is missing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvVarSpec {
     /// Environment variable name.
@@ -727,7 +763,8 @@ pub struct SidecarSpec {
     #[serde(default)]
     pub env: Vec<EnvVarSpec>,
 
-    /// Port to expose on the sidecar.
+    /// Port to expose on the sidecar. Becomes one `containerPort` with no
+    /// name and the default protocol.
     #[serde(default)]
     pub port: Option<i32>,
 

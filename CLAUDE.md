@@ -23,7 +23,9 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ## What's here
 
-- **`src/lib.rs`** (~920 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
+- **`src/lib.rs`** (~950 lines) is the whole crate: public types, one host function, and unit tests (`mod tests`, ~20 tests).
+- **`tests/readme.rs`** checks that the README's type reference lists exactly the JSON keys and variants of every public type (rule 10).
+- **`README.md`** is the plugin author's reference: exports, sandbox, every field, and deckwatch's actual host behaviour and known host issues.
 - **Dependencies:** `serde` and `serde_json` only. Keep it that way: plugins pay for every dependency in wasm size.
 - **`Cargo.lock` is committed** (decided 2026-11-24), so CI is reproducible. CI passes `--locked` everywhere; after changing dependencies, commit the updated lock file in the same PR. Plugins don't use this lock file; they resolve the SDK's dependencies in their own. Keep it at lockfile format v3, which Cargo writes automatically while `rust-version` is below 1.83, so the MSRV toolchain can read it.
 
@@ -47,7 +49,7 @@ deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch
 | `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output | `:354` / `:364` (**ahead**: `init_containers`) |
 | `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output | `:399` / `:429` (**behind**: no `delete_kubernetes_resources` yet) |
 | `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
-| `ProvisioningStatus` | Provisioning state enum, `snake_case` on the wire | `:416` |
+| `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:416` |
 
 deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch. Re-check drift with a field-level diff of both files whenever either side changes; PLAN Phase 3 turns that into CI.
 
@@ -63,6 +65,12 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
 7. **Code compiled for wasm32 avoids `std` features the sandbox lacks** (clock, filesystem, threads, randomness). `now()` exists because `SystemTime::now()` panics there.
 8. **MSRV is 1.82** (`rust-version`). `now()` uses an `unsafe extern "C"` block: 1.81 rejects it, but only on the wasm32 build (host tests pass on 1.81), so the MSRV job must build wasm32. Raising the MSRV is a minor bump.
 9. **Keep the doc comment saying "Mirrors `deckwatch::plugins::…`"** on mirrored types, and update the table above when you add or change one.
+10. **Documentation is pedantic, and it changes in the same PR as the code.** This is an SDK; plugin authors build against the docs.
+    - Every public type, field and variant appears in the README type reference. `tests/readme.rs` enforces this: a new type also needs an entry in that test's `actual()`.
+    - State the JSON contract exactly: required, default, or omitted when empty.
+    - Describe deckwatch's **actual** behaviour, verified in deckwatch's code, and name the deckwatch version it was checked against. In 2026-11, the README and rustdoc said deprovision `message` was shown in the UI, `ProvisioningStatus` drove re-polling, and `deployment_annotations` were applied on every apply. None of that was true.
+    - Where the host contradicts its own types or docs, list it under "Known host issues" rather than documenting the intent.
+11. **Compile README examples before publishing them.** Build a scratch plugin crate from the snippets (wasm32 build plus host `cargo test`). That's how we learned `crate-type = ["cdylib", "rlib"]` breaks host tests with a link error, while `["cdylib"]` alone works.
 
 ## Commands
 
