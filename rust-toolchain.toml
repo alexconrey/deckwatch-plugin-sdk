@@ -1,0 +1,11 @@
+# Pinned Rust toolchain for local builds and CI (ci.yml installs exactly what
+# this file pins, via `rustup toolchain install`). Kept on the same version as
+# deckwatch's rust-toolchain.toml.
+#
+# This is the development toolchain, not the minimum: `rust-version` in
+# Cargo.toml is the MSRV, and the CI `msrv` job checks it separately.
+[toolchain]
+channel = "1.99"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

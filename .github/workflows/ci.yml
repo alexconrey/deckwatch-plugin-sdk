@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  # Also run on every merge to main. Each PR is tested against main as it was
+  # when its CI last ran, so two PRs that pass separately can still break main
+  # together; this catches that right after the merge.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per PR at a time (a new push cancels the outdated run). Runs on main
+# are keyed by commit and never cancelled, so every merge gets a result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # No debug info for the dev/test profile in CI: faster builds and a smaller
+  # cache. Panic messages still report file:line.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml is the single source of truth. With no arguments,
+      # `rustup toolchain install` (rustup >= 1.28) installs the channel,
+      # components and wasm32 target it pins. Never use a floating `stable`.
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version --verbose
+          cargo --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      # --all-targets lints test code too.
+      - name: cargo clippy (host)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Plugins compile this crate for wasm32, and `now()` only exists there.
+      - name: cargo clippy (wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo build (wasm32)
+        run: cargo build --target wasm32-unknown-unknown
+
+      - name: cargo doc
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Reads rust-version from Cargo.toml so the job can't drift from it.
+      # `cargo +<version>` overrides rust-toolchain.toml.
+      - name: Install MSRV toolchain
+        run: |
+          msrv=$(sed -nE 's/^rust-version *= *"([^"]+)".*/\1/p' Cargo.toml)
+          if [ -z "$msrv" ]; then
+            echo "::error file=Cargo.toml::rust-version is not set"
+            exit 1
+          fi
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          rustup toolchain install "$msrv" --profile minimal --target wasm32-unknown-unknown --no-self-update
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The wasm32 build is what enforces the MSRV (`unsafe extern` in `now()`).
+      - name: cargo build (wasm32, MSRV)
+        run: cargo +"$MSRV" build --target wasm32-unknown-unknown
+
+      - name: cargo test (MSRV)
+        run: cargo +"$MSRV" test

@@ -2,6 +2,9 @@
 name = "deckwatch-plugin-sdk"
 version = "0.9.0"
 edition = "2021"
+# MSRV. 1.82 is the first release that accepts the `unsafe extern "C"` block in
+# `now()` (wasm32 only). Raising it is a breaking change: bump the minor version.
+rust-version = "1.82"
 description = "Shared types for deckwatch plugins — import this in your plugin crate alongside extism-pdk"
 repository = "https://github.com/alexconrey/deckwatch-plugin-sdk"
 license = "Apache-2.0"
