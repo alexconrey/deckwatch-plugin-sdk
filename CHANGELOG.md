@@ -4,11 +4,11 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 "Wire" means the JSON exchanged with deckwatch; "source" means Rust code that uses these types. Plugins pin the SDK by tag (`tag = "vX.Y.Z"`), so each section below corresponds to a git tag.
 
-## [0.10.0] - Unreleased
+## [0.10.0] - 2026-11-24
 
 ### Breaking (source)
 
-Upgrading from 0.9 needs, at most, these changes in plugin code:
+Upgrading from 0.9 needs, at most, these changes in plugin code. All nine live deckwatch plugins needed them: the compiler reports `E0063` (missing fields) for each struct literal, and adding `..Default::default()` fixes it.
 
 - **`match` on `ConfigFieldType` or `ProvisioningStatus` needs a `_` arm.** Both are now `#[non_exhaustive]`, and `ConfigFieldType` gains two variants. In exchange, future variants won't break plugins.
 - **Struct literals that name every field** of `PluginMetadata`, `PluginResult`, `ResourceProvisionResult`, `ResourceDeprovisionResult` or `SidecarSpec` need the new fields, or switch to `..Default::default()`. Every struct now derives `Default`.
@@ -136,7 +136,7 @@ The `v0.5.1` tag's `Cargo.toml` still says 0.5.0.
 
 The initial `PluginContext`, `PluginResult`, `EnvVarSpec` and `SidecarSpec`. There is no `v0.1.0` tag; it is part of `v0.2.0`'s history.
 
-[0.10.0]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.9.0...main
+[0.10.0]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/alexconrey/deckwatch-plugin-sdk/compare/v0.8.0...v0.8.1

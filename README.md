@@ -4,7 +4,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 
 | | |
 |---|---|
-| SDK version | 0.10.0 on `main` (unreleased); latest tag `v0.9.0`. Items added after v0.9.0 are marked *0.10.0* |
+| SDK version | 0.10.0 ([release notes](https://github.com/alexconrey/deckwatch-plugin-sdk/releases/tag/v0.10.0)). Items added in 0.10.0 are marked *0.10.0* |
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
@@ -101,7 +101,7 @@ crate-type = ["cdylib"]   # produces a WASM module with exported functions
 
 [dependencies]
 extism-pdk = "1"
-deckwatch-plugin-sdk = { git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.9.0" }
+deckwatch-plugin-sdk = { git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.10.0" }
 serde_json = "1"
 ```
 
