@@ -4,7 +4,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 
 | | |
 |---|---|
-| SDK version | 0.10.0 on `main` (unreleased); latest tag `v0.9.0`. Items added after v0.9.0 are marked *0.10.0* |
+| SDK version | 0.10.0 ([release notes](https://github.com/alexconrey/deckwatch-plugin-sdk/releases/tag/v0.10.0)). Items added in 0.10.0 are marked *0.10.0* |
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
@@ -45,7 +45,11 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
-- **Logging:** report problems with the [event helpers](#reporting-events), which also fill `errors` (logged at `ERROR`) and `warnings` (logged at `WARN`); deckwatch only logs those two so far. Output from `extism_pdk::log!` does not reach deckwatch's logs.
+- **Logging:** three channels.
+  - **Events** (the [event helpers](#reporting-events) `info`, `warn` and `error`). These are the preferred way to report problems. Each helper also copies the event into `errors` or `warnings` (on deprovision, `message`). No deckwatch version reads `events` yet, so for now deckwatch logs only those copies.
+  - **`errors` and `warnings` in the result.** deckwatch logs each at `ERROR` or `WARN` after the export returns, tagged with the plugin's configured name and the namespace and deployment (or application and resource), and counts each error in its `reported_error` metric.
+  - **`extism_pdk::log!`** and the level macros `info!`, `warn!`, `error!`, `debug!` and `trace!`. extism turns each call into a host `tracing` event at the same level, with target `extism::pdk`. The event's only field, `plugin`, is extism's instance id, which changes on every call, so put your plugin's name in the message. deckwatch keeps these events by default since `36e6637` (deckwatch#256, which added `extism::pdk=info` to the default filter). Earlier commits, including `fc03ec2` and the v0.6.7 release, drop them unless `RUST_LOG` includes `extism::pdk`.
+  - `apply` runs on every 10-second reconcile for applications with provisioned resources, so `info!` lines there repeat constantly. Prefer `debug!` for routine messages. Operators can keep only plugin warnings with `extism::pdk=warn` in `RUST_LOG`.
 - **Configuration:** read values with `extism_pdk::config::get("KEY")`. Keys and values come from the plugin's settings entry, in this order (later entries override earlier ones):
   1. `config` (static key/value pairs, including values saved through the settings form; see [`ConfigField`](#configfield));
   2. `CURRENT_TIMESTAMP`;
@@ -102,12 +106,12 @@ crate-type = ["cdylib"]   # produces a WASM module with exported functions
 
 [dependencies]
 extism-pdk = "1"
-deckwatch-plugin-sdk = { git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.9.0" }
+deckwatch-plugin-sdk = { git = "https://github.com/alexconrey/deckwatch-plugin-sdk", tag = "v0.10.0" }
 serde_json = "1"
 ```
 
 - Pin the SDK with `tag = "vX.Y.Z"`. Don't use `branch = "main"`, and avoid a bare `rev`.
-- Use `crate-type = ["cdylib"]` on its own. Adding `"rlib"` makes `cargo test` on the host fail to link, because extism's host imports only exist in wasm.
+- Use `crate-type = ["cdylib"]` on its own. With `"rlib"` added, `cargo test` on the host fails to link (extism's host imports only exist in wasm) unless every `#[plugin_fn]` is also marked `#[cfg(target_arch = "wasm32")]`, as some plugins do.
 
 ### 3. Set the default build target
 
