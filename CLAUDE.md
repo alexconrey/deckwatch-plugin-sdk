@@ -33,30 +33,32 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ### Public API and its deckwatch mirror
 
-deckwatch copies these types by hand in `src/plugins.rs` (line refs at deckwatch `origin/main`, 2026-11-24). Field names are the wire contract; Rust type names may differ.
+deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckwatch `604a36f` (2026-11-25; version 0.7.0, CHANGELOG dated 2026-11-25, not yet tagged). Field names are the wire contract; Rust type names may differ.
 
-| SDK item | Purpose | deckwatch `src/plugins.rs` |
+**As of `604a36f`, every SDK type matches deckwatch's copy field for field.** In 2026-11, deckwatch was first ahead of the SDK (rule 2), then behind it after v0.10.0, until its plugin-events work caught up. Re-check after any change on either side: diff the `pub` fields of both files per type. PLAN Phase 3 and alexconrey/deckwatch#288 (depend on the crate) would make this check unnecessary.
+
+| SDK item | Purpose | deckwatch |
 |---|---|---|
-| `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | host side, not a type |
-| `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields, `min_deckwatch_version` | `:300` |
-| `ConfigField`, `ConfigFieldType` | Plugin config schema entries | `:253`, `:236` |
-| `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch has its own `validate_key_value_field` (`278de71`); `KeyValue`/`Unknown` landed in deckwatch `main` before this SDK (rule 2 reversed) |
-| `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:281` |
-| `PluginContext` | Input to `apply()` (also on deckwatch's `validate_plugin` dry run): namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources`, `trace_context` (0.10.0) with `trace_headers()` | `:36` (**behind**: no `trace_context` yet) |
-| `PluginResult` | Output of `apply()`: env vars, sidecars, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors and warnings, `events` (0.10.0) with the event helpers | `:77` (**behind**: no `events` yet) |
-| `WantsServiceAccount` | Structured ServiceAccount request inside `PluginResult` | `:68` |
-| `EnvVarSpec`, `EnvVarSource`, `SecretKeyRef`, `ConfigMapKeyRef` | Container env vars, with `value` / `secret_key_ref` / `config_map_key_ref` constructors | `:134`; deckwatch names the others `EnvVarSourceSpec` `:143`, `SecretKeyRefSpec` `:151`, `ConfigMapKeyRefSpec` `:157` |
-| `SidecarSpec` | Sidecar or init container to inject; volumes, mounts, split requests/limits (0.10.0) | `:187` |
-| `VolumeSpec`, `VolumeMountSpec` | Pod volumes and container mounts for sidecars (0.10.0) | `:165`, `:177` |
-| `PluginResource` | A resource type a plugin can provision (fields, `singleton`, `output_keys`) | `:336` |
-| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output; `trace_context` / `events` (0.10.0) | `:354` / `:364` (**behind**: neither yet) |
-| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output; `trace_context` / `events` (0.10.0) | `:399` / `:429` (**behind**: no `trace_context`, `delete_kubernetes_resources` or `events` yet) |
-| `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name) for `deprovision()` to ask deckwatch to delete, or for a `PluginEvent` to point at; constructors `new`, `service_account`, `job` | not mirrored yet (SDK-first, added in v0.10.0) |
-| `PluginEvent`, `EventSeverity` | Structured events (0.10.0) in the three results' `events`. `info`/`warn`/`error`/`push_event` on each result also copy an event into `errors`, `warnings` or (deprovision) `message`, as `PluginEvent::legacy_text()` (rule 14). `EventSeverity::Unknown` is the catch-all (rule 13) | not mirrored yet (SDK-first, 0.10.0) |
-| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | not mirrored yet (SDK-first, 0.10.0) |
-| `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:416` |
+| `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | `host_now_fn`, `src/plugins.rs:868` |
+| `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields, `min_deckwatch_version` | `:423` |
+| `ConfigField`, `ConfigFieldType` | Plugin config schema entries; `KeyValue` and the `Unknown` catch-all | `:376`, `:310` |
+| `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch validates with its own `validate_key_value_field` (`:322`) |
+| `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:404` |
+| `PluginContext` | Input to `apply()` (also on deckwatch's `validate_plugin` dry run): namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources`, `trace_context` with `trace_headers()` | `:43`. deckwatch 0.7.0 fills `trace_context` while it exports OTLP traces |
+| `PluginResult` | Output of `apply()`: env vars, sidecars, init containers, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors, warnings, `events` with the event helpers | `:91` |
+| `WantsServiceAccount` | Structured ServiceAccount request inside `PluginResult` | `:82` |
+| `EnvVarSpec`, `EnvVarSource`, `SecretKeyRef`, `ConfigMapKeyRef` | Container env vars, with `value` / `secret_key_ref` / `config_map_key_ref` constructors | `:208`; deckwatch names the others `EnvVarSourceSpec` `:217`, `SecretKeyRefSpec` `:225`, `ConfigMapKeyRefSpec` `:231` |
+| `SidecarSpec` | Sidecar or init container to inject; volumes, mounts, split requests/limits | `:261` |
+| `VolumeSpec`, `VolumeMountSpec` | Pod volumes and container mounts for sidecars | `:239`, `:251` |
+| `PluginResource` | A resource type a plugin can provision (fields, `singleton`, `output_keys`) | `:459` |
+| `ResourceProvisionRequest` / `ResourceProvisionResult` | `provision()` input and output, with `trace_context` / `events` | `:477` / `:490` |
+| `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output, with `trace_context` / `delete_kubernetes_resources` / `events` | `:528` / `:561` |
+| `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name), for `deprovision()` to ask deckwatch to delete or for a `PluginEvent` to point at; constructors `new`, `service_account`, `job` | `:589` |
+| `PluginEvent`, `EventSeverity` | Structured events in the three results' `events`. `info`/`warn`/`error`/`push_event` on each result also copy an event into `errors`, `warnings` or (deprovision) `message`, as `PluginEvent::legacy_text()` (rule 14). `EventSeverity::Unknown` is the catch-all (rule 13) | `:175`, `:156` |
+| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | deckwatch defines its codes in `src/plugin_events.rs` (`:57`–`:87`, including the host-only `plugin.fields_released`) and uses the attribute names in `src/plugins.rs` (`:2025`–`:2027`) |
+| `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:548` |
 
-deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch. Re-check drift with a field-level diff of both files whenever either side changes; PLAN Phase 3 turns that into CI.
+deckwatch-only host types (`LoadedPlugin`, `ValidationResult`, `PluginCall`, `Trigger`, …) stay in deckwatch.
 
 ## Rules that prevent the bugs we've had (and the ones we refuse to have)
 
@@ -75,6 +77,7 @@ deckwatch-only host types (`LoadedPlugin`, `ValidationResult`) stay in deckwatch
     - State the JSON contract exactly: required, default, or omitted when empty.
     - Describe deckwatch's **actual** behaviour, verified in deckwatch's code, and name the deckwatch **commit** it was checked against. deckwatch doesn't bump its `Cargo.toml` version between releases, so in 2026-11 the README said "deckwatch 0.6.7" for behaviour from unreleased `main`, while the real v0.6.7 release was 100 commits older and still leaked deckwatch's encryption key to plugins. When release and `main` differ in a way plugins see, list the differences. In 2026-11, the README and rustdoc said deprovision `message` was shown in the UI, `ProvisioningStatus` drove re-polling, `deployment_annotations` were applied on every apply, and `extism_pdk::log!` couldn't reach deckwatch's logs. None of that was true. The last one was a claim about extism, so check those against extism's source (`~/.cargo/registry/src/*/extism-<version>/src/pdk.rs`) for the version deckwatch's `Cargo.lock` pins.
     - Where the host contradicts its own types or docs, list it under "Known host issues" rather than documenting the intent.
+    - **Re-check before every release.** deckwatch `main` keeps moving. On 2026-11-25, 43 commits after the checked commit (`58ff03c`) had changed six plugin-facing behaviours: refused inherited variables, `validate_plugin`'s sandbox, re-entering secrets, the field sweep, URL masking in events, and MCP schema checks. Before a release PR, re-check the host-behaviour docs against deckwatch `origin/main` (or its newest tag) and re-pin the commit everywhere it's cited, CLAUDE.md's line refs included. Also check the UI labels you cite in deckwatch's `frontend/`. The docs once named a **Refresh** button that doesn't exist.
 11. **Compile README examples before publishing them.** Build a scratch plugin crate from the snippets (wasm32 build plus host `cargo test`). That's how we learned that `crate-type = ["cdylib", "rlib"]` breaks host tests with a link error while `["cdylib"]` alone works. The break only happens when the `#[plugin_fn]` exports are compiled for the host too; plugins that gate them with `#[cfg(target_arch = "wasm32")]` link fine. Test claims like this both ways before writing them down.
 12. **Every public struct derives `Default`, and every public enum is `#[non_exhaustive]`** (since 0.10.0). Adding an enum variant is then non-breaking. Adding a struct field still counts as breaking under Rust semver (`cargo semver-checks` flags it as `constructible_struct_adds_field`, because full struct literals stop compiling), so it needs a minor bump; `Default` just means plugins that use `..Default::default()` aren't affected. Don't make structs `#[non_exhaustive]`: plugins couldn't build them at all. A new struct without `Default`, or a new enum without `#[non_exhaustive]`, brings back avoidable breakage. Add new types to the round-trip test `every_struct_default_round_trips` too.
 13. **An enum that plugins send to the host needs a `#[serde(other)] Unknown` catch-all** (`ConfigFieldType`, and `EventSeverity` from the start). Without one, an older host that meets a newer variant fails to parse the *whole* value it's in, not just that field: one new `field_type` used to cost a plugin every config field it declared, and one new severity would cost the whole `apply()` result. `#[non_exhaustive]` is the source half of this rule; `#[serde(other)]` is the wire half. Each `Unknown` has a documented host meaning (`EventSeverity::Unknown` is treated as `Warning`; `ConfigFieldType::Unknown` renders as a text input), serializes as `"unknown"` (lossy), and plugins must not return it. `ProvisioningStatus` has no catch-all, so a new variant there breaks every existing host: add `Unknown` in one release, and send the new variant only once hosts have it. For the same reason, a struct that appears in lists inside plugin output gets `#[serde(default)]` on the container (`PluginEvent`), so one partial entry can't sink the result.
@@ -103,7 +106,7 @@ Not in CI yet:
 |---|---|
 | `cargo deny check` | Advisories, licenses, bans, sources (needs `deny.toml`; PLAN Phase 4) |
 
-CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Keep the MSRV job reading `rust-version`, not hard-coding it.
+CI adds `--locked` to every cargo command above; add it locally to reproduce CI exactly. Don't pipe a check through `tail` or `grep` without `set -o pipefail`. On 2026-11-25, `cargo doc … | tail -1` hid a failing doc build (an unclosed `<label>` tag in rustdoc), and the commit was pushed. Keep the MSRV job reading `rust-version`, not hard-coding it.
 
 Edition 2021 means Cargo's resolver ignores `rust-version`, so `cargo update` or Dependabot can pull in a dependency that needs a newer rustc than 1.82. The MSRV job (`--locked` on 1.82) catches that. Don't fix it by setting `resolver = "3"`: Cargo 1.82 can't parse it. Hold the dependency back (`cargo update -p <crate> --precise <version>`, plus a narrow `ignore` in `.github/dependabot.yml` so Dependabot doesn't re-propose it) or raise the MSRV, which is a minor bump.
 
@@ -133,7 +136,7 @@ These are the practices that caught or would have caught real breakage in deckwa
 Run `.github/scripts/release-notes.sh vX.Y.Z` locally to preview the notes or the refusal.
 
 Steps:
-1. **Release PR:** collect everything planned for the release on `main` first (the maintainer prefers fewer, fuller minor releases). Then, in one PR, set `Cargo.toml` (and `Cargo.lock`, via any cargo command) to the version, and change the CHANGELOG heading from `## [X.Y.Z] - Unreleased` to today's date.
+1. **Release PR:** collect everything planned for the release on `main` first (the maintainer prefers fewer, fuller minor releases). Re-check the host-behaviour docs against deckwatch first (rule 10). Then, in one PR, set `Cargo.toml` (and `Cargo.lock`, via any cargo command) to the version, and change the CHANGELOG heading from `## [X.Y.Z] - Unreleased` to today's date.
 2. After merge, **the maintainer tags `vX.Y.Z` on `main` and pushes the tag**. The workflow does the rest.
 3. Start the next section: `## [X.Y+1.0] - Unreleased` (or a patch version), and bump `Cargo.toml` when the first breaking change lands. Once `vX.Y.Z` exists, the Semver job fails any breaking change until `Cargo.toml` is bumped past it.
 4. Move downstream (deckwatch and each plugin) to the new tag. **List the plugins from GitHub, not from local checkouts:** `gh repo list alexconrey --limit 200 --json name --jq '.[].name' | grep '^deckwatch-plugin-' | grep -v sdk`. Read each pin from the repo's `main` (`gh api repos/alexconrey/<repo>/contents/Cargo.toml --jq .content | base64 -d`). In 2026-11 the local checkouts listed two deleted repos (rds, s3) and missed five live ones (postgresql, fluent-bit, nginx-proxy, memcached, redis), and several were on feature branches whose pins differed from `main`. Build each plugin's `main` against the release first: v0.10.0 broke all nine with `E0063`. Track the pins in PLAN Phase 4.

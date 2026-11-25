@@ -68,8 +68,8 @@ pub fn now() -> u64 {
 /// Structured ServiceAccount request returned from a plugin's `apply()` export.
 ///
 /// Preferred over including a raw `ServiceAccount` manifest in
-/// `kubernetes_resources` — deckwatch handles create-or-patch with retry
-/// semantics and surfaces the result in the UI and audit log.
+/// `kubernetes_resources`: deckwatch creates or patches the account after the
+/// Deployment is saved and binds the pod to it. Failures are only logged.
 ///
 /// Mirrors `deckwatch::plugins::WantsServiceAccount` — kept in sync manually.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,8 +87,8 @@ pub struct WantsServiceAccount {
 /// Returned in [`ResourceProvisionResult::status`]. Serialized as the variant
 /// name (`"Pending"`, `"Available"`, `"Failed"`), not snake_case.
 ///
-/// As of deckwatch `fc03ec2` (and in the v0.6.7 release) this does **not**
-/// decide whether a resource is re-polled: the host re-polls resources whose
+/// In deckwatch 0.7.0 and the v0.6.7 release this does **not** decide
+/// whether a resource is re-polled: the host re-polls resources whose
 /// stored `state` looks pending (a `*_STATUS` key with an in-progress value,
 /// or `DB_ENGINE`/`DB_STATUS` without `DB_HOST`). On a re-poll, `Available`
 /// and `Failed` results are always stored, and a `Pending` result only if it
@@ -121,15 +121,19 @@ pub enum ConfigFieldType {
     String,
     /// Masked text input. Values saved through the settings form are stored
     /// AES-256-GCM encrypted when deckwatch has `DECKWATCH_ENCRYPTION_KEY`
-    /// set. deckwatch (as of `fc03ec2`) does not decrypt them before calling
-    /// the plugin (see the README's "Known host issues").
+    /// set. deckwatch (0.7.0 and v0.6.7) does not decrypt them before calling
+    /// the plugin (deckwatch#251; see the README's "Known host issues").
     Secret,
     /// Checkbox. Stored as `"true"` or `"false"`.
     Bool,
-    /// A set of key/value pairs, edited as one row per pair (e.g. resource
-    /// tags). Stored in plugin config as a JSON object of string keys to string
-    /// values, e.g. `{"Team":"platform","CostCenter":"1234"}`. An empty value
-    /// means no pairs. Read it with [`parse_key_value_field`].
+    /// A set of key/value pairs, such as resource tags. Stored in plugin
+    /// config as a JSON object of string keys to string values, e.g.
+    /// `{"Team":"platform","CostCenter":"1234"}`. An empty value means no
+    /// pairs. Read it with [`parse_key_value_field`].
+    ///
+    /// Meant to be edited as one row per pair; deckwatch 0.7.0 shows a text
+    /// input of the JSON instead (deckwatch#267). deckwatch v0.6.7 and older
+    /// can't parse it at all: see the README's "Host support for `key_value`".
     KeyValue,
     /// Dropdown. The field must have a non-empty `options` list.
     Select,
@@ -264,7 +268,9 @@ pub struct McpTuningField {
 /// third-party plugins.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginMetadata {
-    /// Display name for logs, the UI and the MCP tuning block.
+    /// Display name. deckwatch uses it only in the MCP tuning block, falling
+    /// back to the registered name when empty; logs, events and status use the
+    /// name the plugin is registered under.
     pub name: String,
     /// Plugin version string (e.g. from `env!("CARGO_PKG_VERSION")`).
     /// Informational; the host never checks it.
@@ -331,16 +337,21 @@ pub struct PluginMetadata {
 pub struct PluginResource {
     /// Machine-readable identifier, unique within this plugin. e.g. `"rds"`, `"s3"`.
     pub id: String,
-    /// Button/tab label shown in the deckwatch UI. e.g. `"RDS Database"`.
+    /// Title of the resource's card on the application's Infrastructure tab,
+    /// and of its provisioning dialog (`Add <label>`). e.g. `"RDS Database"`.
     pub label: String,
-    /// Optional MDI icon name. e.g. `"mdi-database"`.
+    /// Optional MDI icon name for the card and the dialog, e.g.
+    /// `"mdi-database"`. deckwatch falls back to `mdi-cube-outline`.
     #[serde(default)]
     pub icon: String,
-    /// Human-readable description shown in the provisioning dialog.
+    /// Human-readable description, shown on the resource's card.
     #[serde(default)]
     pub description: String,
-    /// If true, only one instance of this resource may exist per application:
-    /// the UI hides the "+" button and the host refuses a second one.
+    /// If true, the host refuses a second instance per application before
+    /// calling `provision()`. deckwatch allows only one of each resource per
+    /// application anyway (a unique index), so without it a second submit
+    /// runs `provision()` and applies its objects before failing
+    /// (deckwatch#336). See the README's "Provisioning".
     #[serde(default)]
     pub singleton: bool,
     /// Form fields the operator fills out when provisioning.
@@ -348,8 +359,9 @@ pub struct PluginResource {
     #[serde(default)]
     pub fields: Vec<ConfigField>,
     /// The [`ResourceProvisionResult::state`] keys this resource will produce,
-    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`. Shown as a
-    /// "provides these env vars" preview in the UI; not enforced.
+    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`.
+    /// Documentation only: deckwatch (0.7.0 and v0.6.7) neither checks nor
+    /// shows it.
     #[serde(default)]
     pub output_keys: Vec<String>,
 }
@@ -375,7 +387,8 @@ pub struct ResourceProvisionRequest {
     /// [`PluginContext::trace_context`].
     ///
     /// Old hosts don't send it, and it deserializes to `None`; `None` is left
-    /// out of the JSON. deckwatch (as of `fc03ec2`) doesn't send it.
+    /// out of the JSON. deckwatch 0.7.0 sends it while it exports OTLP traces;
+    /// v0.6.7 never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_context: Option<String>,
 }
@@ -392,7 +405,7 @@ impl ResourceProvisionRequest {
 ///
 /// Deckwatch stores `state`, `deployment_annotations` and `sidecars` with the
 /// resource and applies them to the application's workloads on its reconcile
-/// loop (every 10 s as of deckwatch `fc03ec2`).
+/// loop (every 10 s).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceProvisionResult {
     /// Stored with the resource. Each key becomes a plain env var in the
@@ -419,9 +432,10 @@ pub struct ResourceProvisionResult {
     /// Deckwatch stores these alongside `state` and server-side applies them
     /// to `spec.template.spec.containers` of the application's Deployments and
     /// CronJobs on each reconcile. The container `name` is the merge key, so
-    /// applying the same sidecar twice is idempotent. As of deckwatch
-    /// `fc03ec2`, the sidecars' env vars lose `value_from` on this path, and
-    /// deleting the application's last resource does not remove them.
+    /// applying the same sidecar twice is idempotent. On this path the
+    /// sidecars' env vars lose `value_from` (deckwatch#247). When the
+    /// application's last resource is removed, deckwatch 0.7.0 releases the
+    /// sidecars; v0.6.7 leaves them in place.
     ///
     /// Use this to inject process sidecars (Redis, PostgreSQL, Fluent Bit, etc.)
     /// that should run alongside every workload in the application.
@@ -431,10 +445,9 @@ pub struct ResourceProvisionResult {
     /// Init containers to add to every Deployment in the application.
     ///
     /// Intended to be prepended to `spec.template.spec.initContainers` on each
-    /// reconcile. As of deckwatch `fc03ec2` (and in the v0.6.7 release) the
-    /// host never stores this field for provisioned resources, so it has no
-    /// effect (deckwatch#249). Old plugins that do not emit this field
-    /// deserialize to an empty vec.
+    /// reconcile. deckwatch (0.7.0 and v0.6.7) never stores this field for
+    /// provisioned resources, so it has no effect (deckwatch#249). Old plugins
+    /// that do not emit this field deserialize to an empty vec.
     ///
     /// Mirrors `deckwatch::plugins::ResourceProvisionResult::init_containers`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -444,20 +457,22 @@ pub struct ResourceProvisionResult {
     /// [`PluginResult::kubernetes_resources`].
     #[serde(default)]
     pub kubernetes_resources: Vec<serde_json::Value>,
-    /// Logged at `ERROR` after `provision()` returns. Provisioning still
-    /// succeeds.
+    /// Errors to report; provisioning still succeeds. deckwatch 0.7.0 turns
+    /// each entry that isn't a copy made by the event helpers into an error
+    /// event, which marks the resource failing (a Kubernetes Event, and a
+    /// notification on the transition); v0.6.7 logs them at `ERROR`. Prefer
+    /// [`error`](Self::error).
     #[serde(default)]
     pub errors: Vec<String>,
-    /// Non-fatal warnings to surface in deckwatch logs.
-    ///
-    /// Logged at `WARN` level after `provision()` returns. Use this for
-    /// conditions that are not fatal but worth operator attention (e.g. a
-    /// resource was created but a non-critical tag is missing).
-    /// Old plugins deserialize to an empty vec.
+    /// Non-fatal warnings worth the operator's attention (e.g. a resource was
+    /// created but a non-critical tag is missing). deckwatch 0.7.0 turns each
+    /// into a warning event, which marks the resource degraded; v0.6.7 logs
+    /// them at `WARN`. Prefer [`warn`](Self::warn). Old plugins deserialize to
+    /// an empty vec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Provisioning lifecycle status. See [`ProvisioningStatus`] for what
-    /// deckwatch (as of `fc03ec2`) actually does with it (it does not, by
+    /// deckwatch actually does with it (it does not, by
     /// itself, cause or stop re-polling). Old plugins that do not emit this
     /// field deserialize to `Pending`.
     #[serde(default)]
@@ -476,8 +491,9 @@ pub struct ResourceProvisionResult {
     /// and `warnings` for hosts that don't read `events`.
     ///
     /// Old plugins don't send it, and it deserializes to an empty vec; an
-    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
-    /// it.
+    /// empty vec is left out of the JSON. deckwatch 0.7.0 reads it (see the
+    /// README's "Status, Kubernetes Events and notifications"); v0.6.7
+    /// ignores it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<PluginEvent>,
 }
@@ -558,7 +574,8 @@ pub struct ResourceDeprovisionRequest {
     /// [`PluginContext::trace_context`].
     ///
     /// Old hosts don't send it, and it deserializes to `None`; `None` is left
-    /// out of the JSON. deckwatch (as of `fc03ec2`) doesn't send it.
+    /// out of the JSON. deckwatch 0.7.0 sends it while it exports OTLP traces;
+    /// v0.6.7 never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_context: Option<String>,
 }
@@ -574,11 +591,12 @@ impl ResourceDeprovisionRequest {
 /// What the plugin returns from its `deprovision()` export.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceDeprovisionResult {
-    /// Logged at `ERROR`. Does not block removal of the resource record.
+    /// Does not block removal of the resource record. deckwatch 0.7.0 returns
+    /// them as events in the DELETE response; v0.6.7 logs them at `ERROR`.
     #[serde(default)]
     pub errors: Vec<String>,
-    /// What was and was not cleaned up. deckwatch (as of `fc03ec2`) logs it
-    /// at `INFO`; it is not shown in the UI.
+    /// What was and was not cleaned up. deckwatch 0.7.0 returns it in the
+    /// DELETE response and shows it in the UI; v0.6.7 only logs it, at `INFO`.
     #[serde(default)]
     pub message: String,
     /// Kubernetes objects for deckwatch to delete once `deprovision()` returns.
@@ -587,18 +605,20 @@ pub struct ResourceDeprovisionResult {
     /// `kubernetes_resources` or `wants_service_account`) that the plugin
     /// can't delete itself, such as a ServiceAccount or a one-off Job.
     ///
-    /// Deckwatch only deletes in the application's namespace (a
-    /// [`KubernetesObjectRef`] has no namespace) and only the kinds it allows:
-    /// `v1` `ServiceAccount` and `batch/v1` `Job`. Jobs are deleted together
-    /// with their pods, and before ServiceAccounts. A ServiceAccount that a
+    /// deckwatch 0.7.0 only deletes in the application's namespace (a
+    /// [`KubernetesObjectRef`] has no namespace) and only `v1`
+    /// `ServiceAccount` and `batch/v1` `Job`. Jobs are deleted together with
+    /// their pods, and before ServiceAccounts. A ServiceAccount that any
     /// Deployment, CronJob or Job in the namespace still uses is kept, because
-    /// deleting it would stop new pods from being created. An object that is
-    /// already gone counts as deleted. Refusals and failures are logged and
-    /// audited, and never block removal of the resource record.
+    /// deleting it would stop new pods from being created; the namespace's
+    /// `default` ServiceAccount is never deleted. Invalid names are refused,
+    /// and an object that is already gone counts as deleted. There is no
+    /// ownership check, so only list objects this plugin created. Each
+    /// outcome is returned in the DELETE response; refusals and failures are
+    /// logged and never block removal of the resource record.
     ///
     /// Old plugins that do not emit this field deserialize to an empty vec, and
-    /// an empty vec is left out of the JSON. Deckwatch versions that predate
-    /// this field ignore it.
+    /// an empty vec is left out of the JSON. The v0.6.7 release ignores it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete_kubernetes_resources: Vec<KubernetesObjectRef>,
     /// Structured events about this call. Add them with
@@ -607,8 +627,9 @@ pub struct ResourceDeprovisionResult {
     /// or `message` for hosts that don't read `events`.
     ///
     /// Old plugins don't send it, and it deserializes to an empty vec; an
-    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
-    /// it.
+    /// empty vec is left out of the JSON. deckwatch 0.7.0 reads it (see the
+    /// README's "Status, Kubernetes Events and notifications"); v0.6.7
+    /// ignores it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<PluginEvent>,
 }
@@ -910,7 +931,7 @@ pub struct PluginContext {
     ///
     /// `None` when the host doesn't trace the call. Old hosts don't send it,
     /// and it deserializes to `None`; `None` is left out of the JSON. deckwatch
-    /// (as of `fc03ec2`) doesn't send it.
+    /// 0.7.0 sends it while it exports OTLP traces; v0.6.7 never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_context: Option<String>,
 }
@@ -1012,8 +1033,8 @@ pub struct PluginResult {
     pub service_account_name: Option<String>,
 
     /// Structured ServiceAccount request — preferred over emitting a raw SA
-    /// in `kubernetes_resources`. Deckwatch handles create/patch with retry
-    /// semantics and surfaces the result in the UI and audit log.
+    /// in `kubernetes_resources`. deckwatch creates or patches it after the
+    /// Deployment is saved and binds the pod to it; failures are only logged.
     ///
     /// Set `irsa_role_arn` to the IAM role ARN when using IRSA; leave it
     /// empty for a plain ServiceAccount with no IAM binding.
@@ -1023,10 +1044,10 @@ pub struct PluginResult {
     /// Annotations to stamp on the deployment's `metadata.annotations`.
     ///
     /// Keys should be namespaced (e.g. `"myorg.io/vault-injected": "true"`).
-    /// deckwatch (as of `fc03ec2`) applies these only on the reconcile loop
+    /// deckwatch (0.7.0 and v0.6.7) applies these only on the reconcile loop
     /// (server-side apply), which only covers applications with a provisioned
-    /// resource; Deployment create and update ignore them. Old plugins
-    /// deserialize to an empty map.
+    /// resource; Deployment create and update ignore them (deckwatch#244).
+    /// Old plugins deserialize to an empty map.
     #[serde(default)]
     pub deployment_annotations: HashMap<String, String>,
 
@@ -1038,20 +1059,20 @@ pub struct PluginResult {
     #[serde(default)]
     pub deployment_labels: HashMap<String, String>,
 
-    /// Non-fatal errors the plugin wants deckwatch to surface in its logs.
+    /// Non-fatal errors the plugin wants the operator to see: IAM errors, RDS
+    /// provisioning failures, etc. The deployment is never blocked.
     ///
-    /// Deckwatch logs each at `ERROR` after `apply()` returns, with the
-    /// plugin's configured name, the namespace and the deployment, and counts
-    /// it in its `reported_error` metric; the deployment is not blocked. Use
-    /// this for any recoverable failure an operator needs to see: IAM errors,
-    /// RDS provisioning failures, etc. Prefer [`error`](Self::error), which
-    /// records a structured event and fills this field too.
+    /// deckwatch 0.7.0 turns each entry that isn't a copy made by the event
+    /// helpers into an error event, which marks the plugin failing for the
+    /// Deployment's application. v0.6.7 logs it at `ERROR`. Prefer
+    /// [`error`](Self::error), which records a structured event and fills this
+    /// field too.
     ///
     /// `extism_pdk::log!` works too: extism turns it into a host `tracing`
-    /// event (target `extism::pdk`) that carries only extism's per-call
-    /// instance id, not the plugin's name. deckwatch keeps those events by
-    /// default since `36e6637` (deckwatch#256); see the README's "The
-    /// sandbox".
+    /// event (target `extism::pdk`) whose only field is extism's per-call
+    /// instance id. deckwatch 0.7.0 emits it inside the call's span, which
+    /// names the plugin, and its default log filter keeps those events since
+    /// `36e6637` (deckwatch#256); see the README's "The sandbox".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
 
@@ -1059,8 +1080,8 @@ pub struct PluginResult {
     /// setup tasks that must finish before the containers start.
     ///
     /// Used on Deployment create and update only. An init container is skipped
-    /// if one with the same name exists. As of deckwatch `fc03ec2` (and in the
-    /// v0.6.7 release) they are **appended**, so they run after the workload's
+    /// if one with the same name exists. In deckwatch 0.7.0 and the v0.6.7
+    /// release they are **appended**, so they run after the workload's
     /// own init containers (deckwatch#249); their `volumes` are not added to
     /// the pod, their `primary_volume_mounts` are ignored, and no tracking
     /// annotation is written. Old plugins deserialize to an empty vec.
@@ -1069,12 +1090,12 @@ pub struct PluginResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub init_containers: Vec<SidecarSpec>,
 
-    /// Non-fatal warnings the plugin wants deckwatch to surface in its logs.
-    ///
-    /// Logged at `WARN` level after `apply()` returns; the deployment is not
-    /// blocked. Use this for degraded-but-functional conditions (e.g. a
+    /// Non-fatal warnings: degraded-but-functional conditions (e.g. a
     /// non-critical config key is missing, or a cloud resource is still
-    /// warming up). Old plugins deserialize to an empty vec.
+    /// warming up). The deployment is never blocked. deckwatch 0.7.0 turns
+    /// each into a warning event, which marks the plugin degraded; v0.6.7 logs
+    /// them at `WARN`. Prefer [`warn`](Self::warn). Old plugins deserialize to
+    /// an empty vec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 
@@ -1084,8 +1105,9 @@ pub struct PluginResult {
     /// and `warnings` for hosts that don't read `events`.
     ///
     /// Old plugins don't send it, and it deserializes to an empty vec; an
-    /// empty vec is left out of the JSON. deckwatch (as of `fc03ec2`) ignores
-    /// it.
+    /// empty vec is left out of the JSON. deckwatch 0.7.0 reads it (see the
+    /// README's "Status, Kubernetes Events and notifications"); v0.6.7
+    /// ignores it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<PluginEvent>,
 }
