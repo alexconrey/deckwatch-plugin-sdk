@@ -437,9 +437,9 @@ A kind of resource the plugin can provision, in `PluginMetadata.resources`. Deri
 | Field | Type | JSON | Description |
 |---|---|---|---|
 | `id` | `String` | required | Unique within the plugin, e.g. `"rds"`. Sent back as `resource_id` |
-| `label` | `String` | required | Button and card label, e.g. `"RDS Database"` |
-| `icon` | `String` | default | MDI icon name, e.g. `"mdi-database"` |
-| `description` | `String` | default | Text in the provisioning dialog |
+| `label` | `String` | required | Title of the resource's card on the application's Infrastructure tab, and of its provisioning dialog ("Add <label>"), e.g. `"RDS Database"` |
+| `icon` | `String` | default | MDI icon name for the card and the dialog, e.g. `"mdi-database"`. deckwatch falls back to `mdi-cube-outline` |
+| `description` | `String` | default | Shown on the resource's card |
 | `singleton` | `bool` | default | The host refuses a second one before calling `provision()`. deckwatch allows only one of each resource per application anyway (a unique index), and the UI offers **Provision** only while there's none. So without `singleton`, a second REST or MCP submit calls `provision()` and applies its `kubernetes_resources`, then fails to record them ([deckwatch#336](https://github.com/alexconrey/deckwatch/issues/336)) |
 | `fields` | `Vec<ConfigField>` | default | Provisioning form fields. Values arrive in `ResourceProvisionRequest.fields` |
 | `output_keys` | `Vec<String>` | default | The `state` keys this resource will produce. Documentation only: deckwatch (0.7.0 and v0.6.7) neither checks nor shows it |

@@ -23,6 +23,7 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 - **Corrected:**
   - `PluginResource.singleton`: deckwatch allows only one of each resource per application anyway, and without `singleton` a duplicate fails only after `provision()` ran (deckwatch#336);
   - `output_keys` isn't shown anywhere;
+  - `PluginResource.label`, `icon` and `description`: where deckwatch's UI shows them;
   - extism's HTTP handling is the same in v0.6.7 (extism 1.30), and redirects bypass `allowed_hosts` (deckwatch#318).
 - New README sections: "Security notes for plugin authors", and plugin upgrades under "Releasing your plugin". Known host issues gain deckwatch#318, #326 and #336.
 - `ConfigFieldType::KeyValue`: deckwatch 0.7.0 shows a text input of the JSON, not one row per pair (deckwatch#267). On v0.6.7 and older, the metadata parse failure is logged only at `DEBUG`, `min_deckwatch_version` isn't checked, and the plugin still runs with its stored `config` values.

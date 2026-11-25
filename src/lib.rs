@@ -337,12 +337,14 @@ pub struct PluginMetadata {
 pub struct PluginResource {
     /// Machine-readable identifier, unique within this plugin. e.g. `"rds"`, `"s3"`.
     pub id: String,
-    /// Button/tab label shown in the deckwatch UI. e.g. `"RDS Database"`.
+    /// Title of the resource's card on the application's Infrastructure tab,
+    /// and of its provisioning dialog ("Add <label>"). e.g. `"RDS Database"`.
     pub label: String,
-    /// Optional MDI icon name. e.g. `"mdi-database"`.
+    /// Optional MDI icon name for the card and the dialog, e.g.
+    /// `"mdi-database"`. deckwatch falls back to `mdi-cube-outline`.
     #[serde(default)]
     pub icon: String,
-    /// Human-readable description shown in the provisioning dialog.
+    /// Human-readable description, shown on the resource's card.
     #[serde(default)]
     pub description: String,
     /// If true, the host refuses a second instance per application before
