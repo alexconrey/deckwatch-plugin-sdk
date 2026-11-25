@@ -8,7 +8,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
-| Host behaviour documented here | deckwatch 0.7.0: `main` at `604a36f` (2026-11-25). Its `Cargo.toml` says 0.7.0 and its CHANGELOG dates the release 2026-11-25, but it isn't tagged yet; the latest release is v0.6.7, which differs a lot. See [differences in the v0.6.7 release](#differences-in-the-v067-release) |
+| Host behaviour documented here | deckwatch [v0.7.0](https://github.com/alexconrey/deckwatch/releases/tag/v0.7.0), released 2026-11-25 (tag on `5c6fdef`). The previous release, v0.6.7, differs a lot. See [differences in the v0.6.7 release](#differences-in-the-v067-release) |
 
 deckwatch keeps its own hand-written copy of these types. Where the two differ, the [type reference](#type-reference) says so.
 
@@ -248,7 +248,7 @@ deckwatch itself runs **every** loaded plugin on every Deployment it creates or 
 - results carry structured [events](#pluginevent): a severity, a stable code, a message, and optional details;
 - inputs carry the host's trace context, which the plugin forwards on its own HTTP calls.
 
-The host does the rest. **deckwatch 0.7.0** (`main` at `604a36f`, not yet tagged):
+The host does the rest. **deckwatch v0.7.0**:
 - wraps each plugin call in a `plugin {export}` span;
 - reads `events` (see [status, Kubernetes Events and notifications](#status-kubernetes-events-and-notifications));
 - fills `trace_context` while it exports OTLP traces.
@@ -350,7 +350,7 @@ How to read the **JSON** column:
 - **default**: a missing key deserializes to the type's default (`""`, `false`, `0`, empty list or map, `None`, or the enum's default variant).
 - **omitted when …**: serialization leaves the key out in that case.
 
-"Host" in descriptions means deckwatch 0.7.0 (`main` at `604a36f`); the [host behaviour](#host-behaviour) section has the details, including how the v0.6.7 release differs.
+"Host" in descriptions means deckwatch v0.7.0; the [host behaviour](#host-behaviour) section has the details, including how the v0.6.7 release differs.
 
 ### `PluginMetadata`
 
@@ -371,7 +371,7 @@ Returned by `metadata()`. Derives `Default`.
 
 - Ordering uses Kahn's algorithm over `provides`, `depends_on` and `optional_depends_on`. Plugins with no edges keep their configured order. If two plugins provide the same capability, the later one in the configured order is the provider. A cycle is logged and its members run in their configured order.
 - Use namespaced capability IDs (`"domain:capability"`). The AWS plugin family uses `"aws:iam-role"`, `"aws:service-account"`, `"aws:rds-connection"` and `"aws:s3-bucket"`.
-- **`min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which isn't tied to a tag.** deckwatch `main` has reported 0.7.0 since `f836fec`, before v0.7.0 is tagged, so `"0.7.0"` loads on those builds and is refused by v0.6.7 and by `main` builds before `f836fec` ([deckwatch#292](https://github.com/alexconrey/deckwatch/issues/292) proposes bumping the version right after each release). Both enforce it, and deckwatch 0.7.0 also reports a refusal as a `plugin.load_failed` event on the plugin's status.
+- **`min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which isn't tied to a tag.** deckwatch `main` reported 0.7.0 from `f836fec` on, before v0.7.0 was tagged, so `"0.7.0"` also loads on those builds, and is refused by v0.6.7 and by `main` builds before `f836fec` ([deckwatch#292](https://github.com/alexconrey/deckwatch/issues/292) proposes bumping the version right after each release). Both enforce it, and deckwatch 0.7.0 also reports a refusal as a `plugin.load_failed` event on the plugin's status.
 
 ### `ConfigField`
 
@@ -407,7 +407,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustiv
 
 | deckwatch | Behaviour |
 |---|---|
-| deckwatch 0.7.0 (`main` since `278de71`; not yet tagged) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields. MCP `provision_resource` takes only string values, so send `key_value` fields as JSON strings there: since [deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298) any other value fails the call, and before it one non-string value dropped every field ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) |
+| deckwatch v0.7.0 (on `main` since `278de71`) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields. MCP `provision_resource` takes only string values, so send `key_value` fields as JSON strings there: since [deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298) any other value fails the call, and before it one non-string value dropped every field ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) |
 | v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, logging the failure only at `DEBUG`. So the plugin loses **every** config field and resource it declares, and its `min_deckwatch_version` isn't checked. It still loads, and its exports still run with the stored `config` values |
 
 Only use `key_value` in a plugin once the deckwatch installs it targets have a release that includes `278de71`.
@@ -717,13 +717,13 @@ What deckwatch 0.7.0 does with `delete_kubernetes_resources` (the v0.6.7 release
 
 ## Host behaviour
 
-This section describes what deckwatch does with plugin output, as read from its code on `main` at `604a36f` (2026-11-25). That's deckwatch 0.7.0: its CHANGELOG dates the release 2026-11-25, but it isn't tagged yet. The latest release, v0.6.7, behaves differently in many places (see below). None of this is a promise about future versions. Behaviour that contradicts deckwatch's own types or documentation is listed under [known host issues](#known-host-issues).
+This section describes what deckwatch does with plugin output, as read from the code of the deckwatch v0.7.0 release (tag on `5c6fdef`, 2026-11-25). The previous release, v0.6.7, behaves differently in many places (see below). None of this is a promise about future versions. Behaviour that contradicts deckwatch's own types or documentation is listed under [known host issues](#known-host-issues).
 
 ### Differences in the v0.6.7 release
 
 The v0.6.7 release (2026-11-06) predates deckwatch's plugin events and tracing work. These differences matter to plugins and the operators who run them:
 
-| Area | v0.6.7 release | deckwatch 0.7.0 (`main` at `604a36f`) |
+| Area | v0.6.7 release | v0.7.0 release |
 |---|---|---|
 | `inherit_env_keys` / `inherit_env_file_keys` | **Passes any variable, `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` included,** if configured to | Refuses those two (`910e9bb`), static AWS credentials and the OTLP exporter's headers ([deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298)). Each refused key adds a `plugin.policy_rejected` warning to every call while it's configured |
 | `GET /api/settings` (unauthenticated) | **Returns plugin config values unmasked**, secret fields included; saving the plugin page could overwrite stored secrets with the masked placeholder | Masks values as `"configured"` unless the schema declares the key non-secret (`bf332ae`) |
@@ -880,7 +880,7 @@ deckwatch issues that plugin code should allow for. Unless noted, they apply to 
 
 ## Known host issues
 
-These are places where deckwatch's behaviour differs from what its own types or documentation say, as of deckwatch 0.7.0 (`main` at `604a36f`). Each links to its deckwatch issue. Unless noted, the v0.6.7 release has the same issue. Until they're fixed, plugins should work around them.
+These are places where deckwatch's behaviour differs from what its own types or documentation say, as of deckwatch v0.7.0. Each links to its deckwatch issue. Unless noted, the v0.6.7 release has the same issue. Until they're fixed, plugins should work around them.
 
 1. **`secret` config values reach the plugin encrypted.** ([deckwatch#251](https://github.com/alexconrey/deckwatch/issues/251)) With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
 2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** ([deckwatch#244](https://github.com/alexconrey/deckwatch/issues/244)) They are applied only by reconcile, which only covers applications with at least one provisioned resource.

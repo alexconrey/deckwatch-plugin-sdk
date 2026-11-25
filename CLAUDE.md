@@ -9,7 +9,7 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 ## 0. First session: bootstrap from PLAN.md
 
 1. **Read `PLAN.md` in full** before changing anything. If it's missing (a fresh clone), continue from this file and say so.
-2. **Verify, don't trust.** Re-check every claim against the code, GitHub (`gh pr list`, `gh release list`, `gh api repos/alexconrey/deckwatch-plugin-sdk/rulesets`) and deckwatch's copy of the plugin types. deckwatch lives at `/Users/alexconrey/git/kore/deckwatch`. Read it with `git show origin/main:src/plugins.rs`; never edit that checkout.
+2. **Verify, don't trust.** Re-check every claim against the code, GitHub (`gh pr list`, `gh release list`, `gh api repos/alexconrey/deckwatch-plugin-sdk/rulesets`) and deckwatch's copy of the plugin types. Read deckwatch (alexconrey/deckwatch) from a local clone with `git show <tag or origin/main>:src/plugins.rs`; never edit that checkout.
 3. **Fold durable knowledge into this file.** That means commands, CI jobs, rules, the release process and the compatibility policy. Replace every `<!-- bootstrap: … -->` marker. Keep the roadmap and its progress in `PLAN.md`.
 4. **Finish:** set the status line to `DONE (date)`, and commit `CLAUDE.md` in a PR (feature branch, PR, the maintainer merges).
 5. **Every later session:** read this file first. Open `PLAN.md` for roadmap items.
@@ -33,9 +33,9 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ### Public API and its deckwatch mirror
 
-deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckwatch `604a36f` (2026-11-25; version 0.7.0, CHANGELOG dated 2026-11-25, not yet tagged). Field names are the wire contract; Rust type names may differ.
+deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckwatch v0.7.0 (tag on `5c6fdef`, 2026-11-25). Field names are the wire contract; Rust type names may differ.
 
-**As of `604a36f`, every SDK type matches deckwatch's copy field for field.** In 2026-11, deckwatch was first ahead of the SDK (rule 2), then behind it after v0.10.0, until its plugin-events work caught up. Re-check after any change on either side: diff the `pub` fields of both files per type. PLAN Phase 3 and alexconrey/deckwatch#288 (depend on the crate) would make this check unnecessary.
+**As of v0.7.0, every SDK type matches deckwatch's copy field for field.** In 2026-11, deckwatch was first ahead of the SDK (rule 2), then behind it after v0.10.0, until its plugin-events work caught up. Re-check after any change on either side: diff the `pub` fields of both files per type. PLAN Phase 3 and alexconrey/deckwatch#288 (depend on the crate) would make this check unnecessary.
 
 | SDK item | Purpose | deckwatch |
 |---|---|---|
@@ -154,4 +154,5 @@ Agents never create tags or releases unless the maintainer explicitly asks.
 - **Never** merge without passing CI. The maintainer merges.
 - **No `Co-Authored-By` or Claude/AI attribution** in commits or PRs.
 - **No force-pushes, tags or releases** without explicit maintainer instruction.
+- **This repo is public, and so are deckwatch, its plugins and mcp-k8s.** Keep company names, internal environment details (cluster, account and team names, infrastructure paths, account ids) and local filesystem paths out of everything: files, commit messages, commit author emails, issues, PRs and comments. Grep drafts before posting; an edited issue or PR body keeps its old text in the public edit history.
 - Work in your own `git worktree` under `/tmp`. **Never `git stash`**: the stash is shared across sessions.
