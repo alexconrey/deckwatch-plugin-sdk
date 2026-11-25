@@ -45,7 +45,10 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
   - HTTP error statuses come back to the plugin as normal responses.
   - **A request that can't be made at all traps the whole export call.** That covers a host not in `allowed_hosts`, an invalid URL, DNS or connection failures, and a response body over 50 MiB (extism's default `max_http_response_bytes`, which deckwatch doesn't change). extism handles these in the host, so the plugin can't catch them; `extism_pdk::http::request`'s `Err` only covers plugin-side problems.
   - **No HTTP timeout of its own.** extism limits a request only to what's left of the call's time limit (the manifest's `timeout_ms`), and running out traps the call. deckwatch sets no limit ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)), so a server that never answers blocks the call indefinitely.
-  - deckwatch then treats the call as failed: `apply` is skipped for that Deployment, `provision` fails with HTTP 400 and nothing is stored, and the `deprovision` record is deleted anyway.
+  - **When a call traps, deckwatch treats it as failed**, and deckwatch 0.7.0 reports an error event for it:
+    - `apply` is skipped for that Deployment, which still goes ahead;
+    - `provision` stores nothing, and on submit or refresh the request fails: HTTP 502 in deckwatch 0.7.0, HTTP 400 in v0.6.7;
+    - after a failed `deprovision`, the resource's record is deleted anyway, but no Kubernetes objects are, since there's no `delete_kubernetes_resources` list to read.
   - Checked in extism 1.41 (deckwatch's version, `src/pdk.rs`, `http_request`) and with a test plugin. Validate URLs yourself, and put outbound calls only where a failed call is acceptable.
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
@@ -388,7 +391,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustiv
 | `"string"` | `String` (default) | Text input | As entered |
 | `"secret"` | `Secret` | Masked input | As entered; encrypted with AES-256-GCM when deckwatch has `DECKWATCH_ENCRYPTION_KEY` set. See [known host issues](#known-host-issues) |
 | `"bool"` | `Bool` | Checkbox | `"true"` or `"false"` |
-| `"key_value"` | `KeyValue` | One row per pair (planned; deckwatch currently shows a text input of the JSON) | A JSON object of string keys to string values, e.g. `{"Team":"platform"}`. Empty means no pairs. Read it with [`parse_key_value_field`](#parse_key_value_field) |
+| `"key_value"` | `KeyValue` | One row per pair (planned, [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267); deckwatch 0.7.0 shows a text input of the JSON) | A JSON object of string keys to string values, e.g. `{"Team":"platform"}`. Empty means no pairs. Read it with [`parse_key_value_field`](#parse_key_value_field) |
 | `"select"` | `Select` | Dropdown over `options` | The chosen option |
 | `"unknown"` | `Unknown` | Text input | As entered |
 
@@ -399,7 +402,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustiv
 | deckwatch | Behaviour |
 |---|---|
 | deckwatch 0.7.0 (`main` since `278de71`; not yet tagged) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields, and MCP `provision_resource` drops *every* field if one value isn't a string ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)), so send them as JSON strings there |
-| v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, so the plugin loses **every** config field and resource it declares |
+| v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, logging the failure only at `DEBUG`. So the plugin loses **every** config field and resource it declares, and its `min_deckwatch_version` isn't checked. It still loads, and its exports still run with the stored `config` values |
 
 Only use `key_value` in a plugin once the deckwatch installs it targets have a release that includes `278de71`.
 

@@ -126,10 +126,14 @@ pub enum ConfigFieldType {
     Secret,
     /// Checkbox. Stored as `"true"` or `"false"`.
     Bool,
-    /// A set of key/value pairs, edited as one row per pair (e.g. resource
-    /// tags). Stored in plugin config as a JSON object of string keys to string
-    /// values, e.g. `{"Team":"platform","CostCenter":"1234"}`. An empty value
-    /// means no pairs. Read it with [`parse_key_value_field`].
+    /// A set of key/value pairs, such as resource tags. Stored in plugin
+    /// config as a JSON object of string keys to string values, e.g.
+    /// `{"Team":"platform","CostCenter":"1234"}`. An empty value means no
+    /// pairs. Read it with [`parse_key_value_field`].
+    ///
+    /// Meant to be edited as one row per pair; deckwatch 0.7.0 shows a text
+    /// input of the JSON instead (deckwatch#267). deckwatch v0.6.7 and older
+    /// can't parse it at all: see the README's "Host support for `key_value`".
     KeyValue,
     /// Dropdown. The field must have a non-empty `options` list.
     Select,
