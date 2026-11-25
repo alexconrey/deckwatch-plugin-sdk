@@ -724,7 +724,7 @@ The v0.6.7 release (2026-11-06) predates deckwatch's plugin events and tracing w
 | `key_value` and unknown `field_type`s | One unknown type fails the whole `metadata()` parse, and the plugin loses all its config fields and resources | Supported; see [`ConfigFieldType`](#configfieldtype) (`278de71`) |
 | MCP tuning settings | `GET /api/plugins` drops `mcp_tuning_fields`, so the settings page never shows a plugin's tuning fields | Shown (`723492c`) |
 | `"upload"` sources | Uploading a plugin unloads every other plugin until the next full reload | Only the uploaded plugin is reloaded (`13a0bfc`) |
-| Plugin events | `events` ignored; `errors` and `warnings` only logged | Read on every call: logged, returned in responses, recorded on a status table, published as Kubernetes Events, sent as notifications (#261, #263, #265, #270) |
+| Plugin events | `events` ignored; `errors` and `warnings` only logged | Read on every call: logged, returned in responses, and recorded on a status table that drives Kubernetes Events and notifications (#261, #263, #265, #270) |
 | Tracing | None | Each call runs in a `plugin {export}` span with `deckwatch.plugin.*` attributes; `trace_context` is filled while OTLP traces are exported (#260, #261) |
 | `provision()` call fails | HTTP 400 | HTTP 502, with `plugin_events` |
 | Deprovision response | `204 No Content`; `message` only logged | `200` with `message`, `plugin_events` and `kubernetes_resource_deletions` |
@@ -839,11 +839,16 @@ deckwatch 0.7.0 only; the v0.6.7 release has none of this.
   - per provisioned resource.
 
   A row is **failing** after a failed call or any error event, **degraded** after a warning or `unknown` event, and **healthy** otherwise. Rows keep the last 10 events. The UI shows them as badges and a problems panel on the application page, and in a Problems view.
-- **The `apply()` row** exists only for Deployments labelled `deckwatch.io/application`. On create and update the last Deployment written wins. Each reconcile cycle replaces the row with the worst result across the application's Deployments.
-- **Kubernetes Events** (events.k8s.io, reporting controller `deckwatch`) go on the affected Deployments, or on CronJobs for released fields.
-  - Reasons: `PluginApplyFailed`, `PluginApplyWarning`, `PluginProvisionFailed`, `PluginProvisionWarning`, `PluginProvisioned`, `PluginDeprovisionFailed`, `PluginDeprovisioned`, `PluginFieldsReleased` and `PluginRecovered`.
-  - The note reads `plugin <name> (<resource>): <code>: <message>`, capped at 1 KB.
-  - The same event is published at most every 5 minutes.
+- **The `apply()` row** exists only for Deployments labelled `deckwatch.io/application`. On create and update the last Deployment written wins. Each reconcile cycle replaces the row with the worst result across the application's Deployments. `apply()` on a Deployment without that label gets no status row, Kubernetes Event or notification; its events still reach the response and the logs.
+- **Kubernetes Events** (events.k8s.io, reporting controller `deckwatch`) go on the affected Deployments, or on CronJobs for released fields. There's one per outcome, not one per plugin event, and info events never become one:
+  - a failing call: `PluginApplyFailed`, `PluginProvisionFailed` or `PluginDeprovisionFailed`, with the first error;
+  - a degraded call: `PluginApplyWarning` or `PluginProvisionWarning`, with the first warning;
+  - a recovery: `PluginRecovered`;
+  - an operator's successful provision or refresh: `PluginProvisioned`;
+  - a deprovision without errors: `PluginDeprovisioned`, with the deprovision `message`;
+  - released fields: `PluginFieldsReleased`.
+
+  For failures and warnings the note reads `plugin <name> (<resource>): <code>: <message>`, plus ` (+N more)` when the call reported other events. Notes are capped at 1 KB, and the same event is published at most every 5 minutes.
 - **Notifications:**
   - `plugin_failing` is sent when a target turns failing, with the first error's code and message. `plugin_recovered` is sent when it recovers.
   - A target that fails again within 10 minutes of its last `plugin_failing` sends nothing, and neither does its next recovery.
