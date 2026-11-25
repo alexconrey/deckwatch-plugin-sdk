@@ -13,6 +13,18 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
   - rustdoc in `src/lib.rs` and `src/telemetry.rs`;
   - CLAUDE.md's type table: every SDK type now matches deckwatch's copy field for field.
 - Corrected two older claims: `PluginMetadata.name` isn't used for logs or the UI (only the MCP tuning block), and `wants_service_account` results aren't shown in the UI or audit log.
+- **Host behaviour re-checked against deckwatch `main` at `604a36f`.** Its CHANGELOG dates 0.7.0 2026-11-25, but it isn't tagged yet. Changes since `58ff03c` that affect plugins:
+  - more inherited variables are refused: static AWS credentials and the OTLP exporter's headers (deckwatch#298);
+  - MCP `validate_plugin` runs plugins with no network access, git token or inherited values (deckwatch#298);
+  - masked config values must be re-entered after a plugin's `source` or `sha256` changes, and an upload to an unpinned plugin clears them (deckwatch#342);
+  - the field sweep only releases workloads stamped with the database's `plugins.deckwatch.io/fields-owner` id, and every application with a resource is reconciled (deckwatch#345);
+  - event text has the query values and fragments of URLs masked too, not only the userinfo (deckwatch#299);
+  - MCP `provision_resource` rejects non-string field values instead of dropping every field (deckwatch#302, fixed by deckwatch#298).
+- **Corrected:**
+  - `PluginResource.singleton`: deckwatch allows only one of each resource per application anyway, and without `singleton` a duplicate fails only after `provision()` ran (deckwatch#336);
+  - `output_keys` isn't shown anywhere;
+  - extism's HTTP handling is the same in v0.6.7 (extism 1.30), and redirects bypass `allowed_hosts` (deckwatch#318).
+- New README sections: "Security notes for plugin authors", and plugin upgrades under "Releasing your plugin". Known host issues gain deckwatch#318, #326 and #336.
 - `ConfigFieldType::KeyValue`: deckwatch 0.7.0 shows a text input of the JSON, not one row per pair (deckwatch#267). On v0.6.7 and older, the metadata parse failure is logged only at `DEBUG`, `min_deckwatch_version` isn't checked, and the plugin still runs with its stored `config` values.
 - README, "The sandbox": a request that extism can't make traps the whole export call, and the plugin can't catch it. That covers a host not in `allowed_hosts`, a bad URL, DNS or connection failures, and a response body over 50 MiB. extism has no HTTP timeout of its own, and deckwatch sets no call time limit, so a server that never answers blocks the call. Also what deckwatch does with each export when that happens. Found while building deckwatch-plugin-example's webhook.
 

@@ -33,18 +33,18 @@ This crate holds the shared Rust types and helpers that every deckwatch plugin c
 
 ### Public API and its deckwatch mirror
 
-deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckwatch `58ff03c` (2026-11-24; version 0.7.0, not yet tagged). Field names are the wire contract; Rust type names may differ.
+deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckwatch `604a36f` (2026-11-25; version 0.7.0, CHANGELOG dated 2026-11-25, not yet tagged). Field names are the wire contract; Rust type names may differ.
 
-**As of `58ff03c`, every SDK type matches deckwatch's copy field for field.** In 2026-11, deckwatch was first ahead of the SDK (rule 2), then behind it after v0.10.0, until its plugin-events work caught up. Re-check after any change on either side: diff the `pub` fields of both files per type. PLAN Phase 3 and alexconrey/deckwatch#288 (depend on the crate) would make this check unnecessary.
+**As of `604a36f`, every SDK type matches deckwatch's copy field for field.** In 2026-11, deckwatch was first ahead of the SDK (rule 2), then behind it after v0.10.0, until its plugin-events work caught up. Re-check after any change on either side: diff the `pub` fields of both files per type. PLAN Phase 3 and alexconrey/deckwatch#288 (depend on the crate) would make this check unnecessary.
 
 | SDK item | Purpose | deckwatch |
 |---|---|---|
-| `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | `host_now_fn`, `src/plugins.rs:797` |
+| `now()` (wasm32 only) | Host function `extism:host/user::now`, Unix seconds. Use it instead of `SystemTime::now()`, which panics in the sandbox | `host_now_fn`, `src/plugins.rs:868` |
 | `PluginMetadata` | Plugin self-description: name, version, `provides`/`depends_on` ordering, config schema, provisionable resources, MCP tuning fields, `min_deckwatch_version` | `:423` |
 | `ConfigField`, `ConfigFieldType` | Plugin config schema entries; `KeyValue` and the `Unknown` catch-all | `:376`, `:310` |
 | `parse_key_value_field` | Parses a `key_value` config value (JSON object of strings; empty means none) | deckwatch validates with its own `validate_key_value_field` (`:322`) |
 | `McpTuningField` | A per-plugin tuning input shown in deckwatch's MCP settings (key, label, placeholder, default) | `:404` |
-| `PluginContext` | Input to `apply()` (also on deckwatch's `validate_plugin` dry run): namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources`, `trace_context` with `trace_headers()` | `:43`. deckwatch sends `trace_context: None` so far (alexconrey/deckwatch#289) |
+| `PluginContext` | Input to `apply()` (also on deckwatch's `validate_plugin` dry run): namespace, deployment name, annotations, labels, earlier plugins' `plugin_outputs`, `provisioned_resources`, `trace_context` with `trace_headers()` | `:43`. deckwatch 0.7.0 fills `trace_context` while it exports OTLP traces |
 | `PluginResult` | Output of `apply()`: env vars, sidecars, init containers, raw Kubernetes resources, outputs for dependent plugins, service account, deployment annotations/labels, errors, warnings, `events` with the event helpers | `:91` |
 | `WantsServiceAccount` | Structured ServiceAccount request inside `PluginResult` | `:82` |
 | `EnvVarSpec`, `EnvVarSource`, `SecretKeyRef`, `ConfigMapKeyRef` | Container env vars, with `value` / `secret_key_ref` / `config_map_key_ref` constructors | `:208`; deckwatch names the others `EnvVarSourceSpec` `:217`, `SecretKeyRefSpec` `:225`, `ConfigMapKeyRefSpec` `:231` |
@@ -55,7 +55,7 @@ deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckw
 | `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output, with `trace_context` / `delete_kubernetes_resources` / `events` | `:528` / `:561` |
 | `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name), for `deprovision()` to ask deckwatch to delete or for a `PluginEvent` to point at; constructors `new`, `service_account`, `job` | `:589` |
 | `PluginEvent`, `EventSeverity` | Structured events in the three results' `events`. `info`/`warn`/`error`/`push_event` on each result also copy an event into `errors`, `warnings` or (deprovision) `message`, as `PluginEvent::legacy_text()` (rule 14). `EventSeverity::Unknown` is the catch-all (rule 13) | `:175`, `:156` |
-| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | deckwatch uses the codes in `src/plugin_events.rs` (`:71`–`:78`) and the attribute names in `src/plugins.rs` (`:1882`–`:1884`) |
+| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | deckwatch defines its codes in `src/plugin_events.rs` (`:57`–`:87`, including the host-only `plugin.fields_released`) and uses the attribute names in `src/plugins.rs` (`:2025`–`:2027`) |
 | `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:548` |
 
 deckwatch-only host types (`LoadedPlugin`, `ValidationResult`, `PluginCall`, `Trigger`, …) stay in deckwatch.

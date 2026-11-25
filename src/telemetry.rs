@@ -12,7 +12,7 @@
 //!   [`ResourceProvisionRequest`](crate::ResourceProvisionRequest::trace_headers)
 //!   and [`ResourceDeprovisionRequest`](crate::ResourceDeprovisionRequest::trace_headers).
 //!
-//! deckwatch 0.7.0 (`main` at `58ff03c`, not yet tagged) does all of this:
+//! deckwatch 0.7.0 (`main` at `604a36f`, not yet tagged) does all of this:
 //! every call runs in that span, `trace_context` is filled while it exports
 //! OTLP traces, and `events` are read. The v0.6.7 release does none of it.
 

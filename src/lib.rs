@@ -345,8 +345,11 @@ pub struct PluginResource {
     /// Human-readable description shown in the provisioning dialog.
     #[serde(default)]
     pub description: String,
-    /// If true, only one instance of this resource may exist per application:
-    /// the UI hides the "+" button and the host refuses a second one.
+    /// If true, the host refuses a second instance per application before
+    /// calling `provision()`. deckwatch allows only one of each resource per
+    /// application anyway (a unique index), so without it a second submit
+    /// runs `provision()` and applies its objects before failing
+    /// (deckwatch#336). See the README's "Provisioning".
     #[serde(default)]
     pub singleton: bool,
     /// Form fields the operator fills out when provisioning.
@@ -354,8 +357,9 @@ pub struct PluginResource {
     #[serde(default)]
     pub fields: Vec<ConfigField>,
     /// The [`ResourceProvisionResult::state`] keys this resource will produce,
-    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`. Shown as a
-    /// "provides these env vars" preview in the UI; not enforced.
+    /// e.g. `["DB_HOST", "DB_PORT", "DB_NAME", "DB_IAM_AUTH"]`.
+    /// Documentation only: deckwatch (0.7.0 and v0.6.7) neither checks nor
+    /// shows it.
     #[serde(default)]
     pub output_keys: Vec<String>,
 }

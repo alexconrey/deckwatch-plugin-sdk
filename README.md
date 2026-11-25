@@ -8,7 +8,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
-| Host behaviour documented here | deckwatch 0.7.0: `main` at `58ff03c` (2026-11-24). Its `Cargo.toml` says 0.7.0, but it isn't tagged yet; the latest release is v0.6.7, which differs a lot. See [differences in the v0.6.7 release](#differences-in-the-v067-release) |
+| Host behaviour documented here | deckwatch 0.7.0: `main` at `604a36f` (2026-11-25). Its `Cargo.toml` says 0.7.0 and its CHANGELOG dates the release 2026-11-25, but it isn't tagged yet; the latest release is v0.6.7, which differs a lot. See [differences in the v0.6.7 release](#differences-in-the-v067-release) |
 
 deckwatch keeps its own hand-written copy of these types. Where the two differ, the [type reference](#type-reference) says so.
 
@@ -42,6 +42,7 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 
 - **No WASI.** There is no filesystem, no environment, no threads, and no system clock.
 - **Network:** only extism's HTTP host function (`extism_pdk::http::request`), and only to hosts in the plugin's `allowed_hosts` setting. An empty list leaves extism's default in place, which allows no hosts.
+  - extism checks only the first request's host. It then follows up to 10 redirects to any host ([deckwatch#318](https://github.com/alexconrey/deckwatch/issues/318)), so `allowed_hosts` doesn't guarantee where a request ends up.
   - HTTP error statuses come back to the plugin as normal responses.
   - **A request that can't be made at all traps the whole export call.** That covers a host not in `allowed_hosts`, an invalid URL, DNS or connection failures, and a response body over 50 MiB (extism's default `max_http_response_bytes`, which deckwatch doesn't change). extism handles these in the host, so the plugin can't catch them; `extism_pdk::http::request`'s `Err` only covers plugin-side problems.
   - **No HTTP timeout of its own.** extism limits a request only to what's left of the call's time limit (the manifest's `timeout_ms`), and running out traps the call. deckwatch sets no limit ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)), so a server that never answers blocks the call indefinitely.
@@ -49,14 +50,14 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
     - `apply` is skipped for that Deployment, which still goes ahead;
     - `provision` stores nothing, and on submit or refresh the request fails: HTTP 502 in deckwatch 0.7.0, HTTP 400 in v0.6.7;
     - after a failed `deprovision`, the resource's record is deleted anyway, but no Kubernetes objects are, since there's no `delete_kubernetes_resources` list to read.
-  - Checked in extism 1.41 (deckwatch's version, `src/pdk.rs`, `http_request`) and with a test plugin. Validate URLs yourself, and put outbound calls only where a failed call is acceptable.
+  - Checked in extism 1.41 (deckwatch 0.7.0's version, `src/pdk.rs`, `http_request`) and with a test plugin. extism 1.30, in v0.6.7, has the same `http_request`. Validate URLs yourself, and put outbound calls only where a failed call is acceptable.
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
 - **Logging:** three channels.
   - **Events** (the [event helpers](#reporting-events) `info`, `warn` and `error`). These are the preferred way to report problems. deckwatch 0.7.0 reads them on every call:
     - it logs each one once (target `deckwatch::plugin_events`, at the event's own level, with fields `plugin` (the registered name), `export`, `code`, `retryable` and `resource_id`), rate-limited per plugin to bursts of 60, then 1 per second;
-    - it returns them wherever the call has a response;
+    - it returns them wherever the call has a response. MCP tools append them after their JSON, as `Plugin events (N):` inside a fence that marks them as untrusted data;
     - it records them on the plugin's [status](#status-kubernetes-events-and-notifications).
 
     Each helper also copies the event into `errors` or `warnings` (on deprovision, `message`) for older hosts, and deckwatch 0.7.0 drops those copies instead of reporting them twice. The v0.6.7 release ignores `events` and logs only the copies.
@@ -71,7 +72,11 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
   3. `inherit_env_keys`: each named environment variable of the deckwatch process, under its own name;
   4. `inherit_env_file_keys`: a map from config key to the name of an environment variable that holds a file path. deckwatch reads the file and passes its trimmed contents.
 
-  `metadata` receives only `config`, without steps 2–4. deckwatch never passes `DECKWATCH_ENCRYPTION_KEY` or `DECKWATCH_DATABASE_URL` through steps 3 or 4.
+  `metadata` receives only `config`, without steps 2–4.
+
+  **deckwatch 0.7.0 refuses its own secrets in steps 3 and 4.** That covers `DECKWATCH_ENCRYPTION_KEY`, `DECKWATCH_DATABASE_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS` and the per-signal `OTEL_EXPORTER_OTLP_*_HEADERS`. Each refused key adds a `plugin.policy_rejected` warning to every call, and the plugin runs without it. v0.6.7 passes any variable it's configured to.
+
+  A plugin that needs AWS credentials needs its own: a workload identity token through `inherit_env_file_keys` (for example `{"AWS_IDENTITY_TOKEN": "AWS_WEB_IDENTITY_TOKEN_FILE"}`), or keys in its `config`.
 
 ### `parse_key_value_field`
 
@@ -204,15 +209,15 @@ Add an entry to `plugins` in deckwatch's settings (Settings → Plugins):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `name` | required | Unique name. Used in tracking annotation keys and as the key other plugins use to read this plugin's `outputs` |
+| `name` | required | Unique name. Used in tracking annotation keys and as the key other plugins use to read this plugin's `outputs`. To upload a binary, deckwatch 0.7.0 needs a name of ASCII letters, digits, `.`, `_` and `-` that doesn't start with `.` |
 | `enabled` | `true` | Disabled plugins are not loaded |
 | `source` | required | One of the three shapes below |
 | `token_secret` | none | Name of a configured git token, sent as a bearer token when fetching |
 | `allowed_hosts` | `[]` | Hosts the plugin may reach over HTTP |
 | `config` | `{}` | Config keys and values passed to the plugin |
-| `inherit_env_keys` | `[]` | deckwatch environment variables to pass through, under the same name |
-| `inherit_env_file_keys` | `{}` | Config key → environment variable holding a file path; the file's trimmed contents are passed |
-| `sha256` | none | Expected SHA-256 of the binary. A mismatch rejects it; without it deckwatch logs a warning and loads the binary anyway |
+| `inherit_env_keys` | `[]` | deckwatch environment variables to pass through, under the same name. deckwatch 0.7.0 refuses its own secrets (see [the sandbox](#the-sandbox)) |
+| `inherit_env_file_keys` | `{}` | Config key → environment variable holding a file path; the file's trimmed contents are passed. The same refusals apply |
+| `sha256` | none | Expected SHA-256 of the binary. A mismatch rejects it; without it deckwatch logs a warning and loads the binary anyway. In deckwatch 0.7.0, changing or removing it, or changing `source`, means re-entering the plugin's masked config values (see [settings form and secrets](#settings-form-and-secrets)) |
 | `mcp_tuning` | `{}` | Saved values for the plugin's [`mcp_tuning_fields`](#mcptuningfield) |
 
 `source` shapes:
@@ -222,7 +227,7 @@ Add an entry to `plugins` in deckwatch's settings (Settings → Plugins):
 | `"github"`, `use_release: true` | `repo` (`owner/name`), `ref`, `path` | `https://github.com/{repo}/releases/download/{ref}/{path}` |
 | `"github"`, `use_release` false or absent | same | `https://raw.githubusercontent.com/{repo}/{ref}/{path}` |
 | `"url"` | `url` | `url` |
-| `"upload"` | `filename` | A file uploaded to deckwatch (`/data/uploads`) |
+| `"upload"` | `filename` | A file uploaded with `POST /api/plugins/{name}/upload`, which also switches the plugin's `source` to this shape. Kept in `/data/uploads`. In deckwatch 0.7.0 an upload must match `sha256` when one is set; otherwise it clears the plugin's masked config values and returns their keys as `cleared_config_keys` |
 
 ### 7. Opt deployments in
 
@@ -243,7 +248,7 @@ deckwatch itself runs **every** loaded plugin on every Deployment it creates or 
 - results carry structured [events](#pluginevent): a severity, a stable code, a message, and optional details;
 - inputs carry the host's trace context, which the plugin forwards on its own HTTP calls.
 
-The host does the rest. **deckwatch 0.7.0** (`main` at `58ff03c`, not yet tagged):
+The host does the rest. **deckwatch 0.7.0** (`main` at `604a36f`, not yet tagged):
 - wraps each plugin call in a `plugin {export}` span;
 - reads `events` (see [status, Kubernetes Events and notifications](#status-kubernetes-events-and-notifications));
 - fills `trace_context` while it exports OTLP traces.
@@ -289,7 +294,7 @@ fn report(result: &mut PluginResult) {
 - **Caps:** `message` at 2048 bytes, `hint` at 512, `code` at 128, and ids and object fields at 253.
 - **Events per call:** it keeps at most 20, host events first, then the most severe.
 - **Malformed events:** it skips one with a `plugin.output_invalid` warning instead of rejecting the whole result.
-- **Text:** it puts event text on one line, and masks secret config values and URL credentials in it.
+- **Text:** it puts event text on one line. It masks the values of `secret` config fields and of file-sourced keys, and the userinfo, query values and fragment of every URL (`scheme://…`). It doesn't mask undeclared config keys or values passed through `inherit_env_keys` ([deckwatch#326](https://github.com/alexconrey/deckwatch/issues/326)), so keep secrets out of event text.
 - **Codes:** it lowercases them. It rewrites one that starts with `plugin.`, or has no dot, to `<registered-name>.<code>`. It doesn't check that a dotted code's prefix is the plugin's own name.
 
 ### Forwarding the trace
@@ -344,7 +349,7 @@ How to read the **JSON** column:
 - **default**: a missing key deserializes to the type's default (`""`, `false`, `0`, empty list or map, `None`, or the enum's default variant).
 - **omitted when …**: serialization leaves the key out in that case.
 
-"Host" in descriptions means deckwatch 0.7.0 (`main` at `58ff03c`); the [host behaviour](#host-behaviour) section has the details, including how the v0.6.7 release differs.
+"Host" in descriptions means deckwatch 0.7.0 (`main` at `604a36f`); the [host behaviour](#host-behaviour) section has the details, including how the v0.6.7 release differs.
 
 ### `PluginMetadata`
 
@@ -365,7 +370,7 @@ Returned by `metadata()`. Derives `Default`.
 
 - Ordering uses Kahn's algorithm over `provides`, `depends_on` and `optional_depends_on`. Plugins with no edges keep their configured order. If two plugins provide the same capability, the later one in the configured order is the provider. A cycle is logged and its members run in their configured order.
 - Use namespaced capability IDs (`"domain:capability"`). The AWS plugin family uses `"aws:iam-role"`, `"aws:service-account"`, `"aws:rds-connection"` and `"aws:s3-bucket"`.
-- **`min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which isn't tied to a tag.** `main` at `58ff03c` already reports 0.7.0 even though v0.7.0 isn't released, so `"0.7.0"` loads on a build of that commit and is refused by v0.6.7 ([deckwatch#292](https://github.com/alexconrey/deckwatch/issues/292) proposes bumping the version right after each release). Both enforce it, and deckwatch 0.7.0 also reports a refusal as a `plugin.load_failed` event on the plugin's status.
+- **`min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which isn't tied to a tag.** deckwatch `main` has reported 0.7.0 since `f836fec`, before v0.7.0 is tagged, so `"0.7.0"` loads on those builds and is refused by v0.6.7 and by `main` builds before `f836fec` ([deckwatch#292](https://github.com/alexconrey/deckwatch/issues/292) proposes bumping the version right after each release). Both enforce it, and deckwatch 0.7.0 also reports a refusal as a `plugin.load_failed` event on the plugin's status.
 
 ### `ConfigField`
 
@@ -401,7 +406,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustiv
 
 | deckwatch | Behaviour |
 |---|---|
-| deckwatch 0.7.0 (`main` since `278de71`; not yet tagged) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields, and MCP `provision_resource` drops *every* field if one value isn't a string ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)), so send them as JSON strings there |
+| deckwatch 0.7.0 (`main` since `278de71`; not yet tagged) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields. MCP `provision_resource` takes only string values, so send `key_value` fields as JSON strings there: since [deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298) any other value fails the call, and before it one non-string value dropped every field ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) |
 | v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, logging the failure only at `DEBUG`. So the plugin loses **every** config field and resource it declares, and its `min_deckwatch_version` isn't checked. It still loads, and its exports still run with the stored `config` values |
 
 Only use `key_value` in a plugin once the deckwatch installs it targets have a release that includes `278de71`.
@@ -435,9 +440,9 @@ A kind of resource the plugin can provision, in `PluginMetadata.resources`. Deri
 | `label` | `String` | required | Button and card label, e.g. `"RDS Database"` |
 | `icon` | `String` | default | MDI icon name, e.g. `"mdi-database"` |
 | `description` | `String` | default | Text in the provisioning dialog |
-| `singleton` | `bool` | default | At most one per application; the host refuses a second |
+| `singleton` | `bool` | default | The host refuses a second one before calling `provision()`. deckwatch allows only one of each resource per application anyway (a unique index), and the UI offers **Provision** only while there's none. So without `singleton`, a second REST or MCP submit calls `provision()` and applies its `kubernetes_resources`, then fails to record them ([deckwatch#336](https://github.com/alexconrey/deckwatch/issues/336)) |
 | `fields` | `Vec<ConfigField>` | default | Provisioning form fields. Values arrive in `ResourceProvisionRequest.fields` |
-| `output_keys` | `Vec<String>` | default | The `state` keys this resource will produce, shown as a preview in the UI |
+| `output_keys` | `Vec<String>` | default | The `state` keys this resource will produce. Documentation only: deckwatch (0.7.0 and v0.6.7) neither checks nor shows it |
 
 ### `PluginContext`
 
@@ -670,7 +675,7 @@ What deckwatch 0.7.0 does with `delete_kubernetes_resources` (the v0.6.7 release
   - the namespace's `default` ServiceAccount, always.
 - **Validation:** a name that isn't a valid Kubernetes name is refused.
 - **Already gone** counts as deleted.
-- **No ownership check.** deckwatch deletes whatever ServiceAccount or Job you name, so only list objects your plugin created.
+- **No ownership check** ([deckwatch#329](https://github.com/alexconrey/deckwatch/issues/329)). deckwatch deletes whatever ServiceAccount or Job you name, so only list objects your plugin created. Its in-use check doesn't look at StatefulSets, DaemonSets, ReplicaSets or bare Pods either.
 - **Outcomes** come back in the DELETE response as `kubernetes_resource_deletions`, each `deleted`, `not_found`, `refused` or `failed`. Refusals and failures are logged and counted in metrics, but aren't plugin events.
 - **When nothing is deleted:** if `deprovision()` itself failed, or the plugin isn't loaded.
 - **The record** is removed either way.
@@ -711,16 +716,17 @@ What deckwatch 0.7.0 does with `delete_kubernetes_resources` (the v0.6.7 release
 
 ## Host behaviour
 
-This section describes what deckwatch does with plugin output, as read from its code on `main` at `58ff03c` (2026-11-24). That's deckwatch 0.7.0, which isn't tagged yet. The latest release, v0.6.7, behaves differently in many places (see below). None of this is a promise about future versions. Behaviour that contradicts deckwatch's own types or documentation is listed under [known host issues](#known-host-issues).
+This section describes what deckwatch does with plugin output, as read from its code on `main` at `604a36f` (2026-11-25). That's deckwatch 0.7.0: its CHANGELOG dates the release 2026-11-25, but it isn't tagged yet. The latest release, v0.6.7, behaves differently in many places (see below). None of this is a promise about future versions. Behaviour that contradicts deckwatch's own types or documentation is listed under [known host issues](#known-host-issues).
 
 ### Differences in the v0.6.7 release
 
 The v0.6.7 release (2026-11-06) predates deckwatch's plugin events and tracing work. These differences matter to plugins and the operators who run them:
 
-| Area | v0.6.7 release | deckwatch 0.7.0 (`main` at `58ff03c`) |
+| Area | v0.6.7 release | deckwatch 0.7.0 (`main` at `604a36f`) |
 |---|---|---|
-| `inherit_env_keys` / `inherit_env_file_keys` | **Will pass `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` to a plugin** if configured to | Refuses them (`910e9bb`), and adds a `plugin.policy_rejected` warning to every call while one is configured |
+| `inherit_env_keys` / `inherit_env_file_keys` | **Passes any variable, `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` included,** if configured to | Refuses those two (`910e9bb`), static AWS credentials and the OTLP exporter's headers ([deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298)). Each refused key adds a `plugin.policy_rejected` warning to every call while it's configured |
 | `GET /api/settings` (unauthenticated) | **Returns plugin config values unmasked**, secret fields included; saving the plugin page could overwrite stored secrets with the masked placeholder | Masks values as `"configured"` unless the schema declares the key non-secret (`bf332ae`) |
+| Changing a plugin's `source` or `sha256` | Stored config values, secrets included, stay and reach the new code | The settings save is refused (`400`) until the masked values are re-entered or removed; an upload to an unpinned plugin clears them ([deckwatch#342](https://github.com/alexconrey/deckwatch/pull/342)) |
 | `key_value` and unknown `field_type`s | One unknown type fails the whole `metadata()` parse, and the plugin loses all its config fields and resources | Supported; see [`ConfigFieldType`](#configfieldtype) (`278de71`) |
 | MCP tuning settings | `GET /api/plugins` drops `mcp_tuning_fields`, so the settings page never shows a plugin's tuning fields | Shown (`723492c`) |
 | `"upload"` sources | Uploading a plugin unloads every other plugin until the next full reload | Only the uploaded plugin is reloaded (`13a0bfc`) |
@@ -730,7 +736,7 @@ The v0.6.7 release (2026-11-06) predates deckwatch's plugin events and tracing w
 | Deprovision response | `204 No Content`; `message` only logged | `200` with `message`, `plugin_events` and `kubernetes_resource_deletions` |
 | `delete_kubernetes_resources` | Ignored | Deleted ([deckwatch#235](https://github.com/alexconrey/deckwatch/pull/235)); see [`KubernetesObjectRef`](#kubernetesobjectref) |
 | An application's last resource is removed | Its env vars, sidecars and annotations stay on the workloads | Released by the field sweep ([deckwatch#229](https://github.com/alexconrey/deckwatch/pull/229)); see [provisioning](#provisioning) |
-| MCP `validate_plugin` | Doesn't call `metadata()` | Loads the plugin first, including `metadata()` and the version check |
+| MCP `validate_plugin` | Doesn't call `metadata()` | Loads the plugin first, including `metadata()` and the version check. Runs it with no network access, git token or inherited values, and refuses `token_secret` and `allowed_hosts` ([deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298)) |
 | GitHub sources | Always github.com and raw.githubusercontent.com | Configurable download bases (`endpoints.github_web_base`, `endpoints.github_raw_base`) |
 
 Everything else in this section applies to both versions, unless it says otherwise. Each [known host issue](#known-host-issues) says which versions have it.
@@ -741,8 +747,8 @@ Everything else in this section applies to both versions, unless it says otherwi
 |---|---|---|
 | **Create** | REST `POST /api/namespaces/{ns}/deployments`, before the Deployment is created | `provisioned_resources` empty; `plugin_outputs` chained between plugins |
 | **Update** | REST `PUT /api/namespaces/{ns}/deployments/{name}`, after the operator's edits and before the replace | Same as create |
-| **Reconcile** | Every 10 s, for each application with at least one provisioned resource that has state or sidecars, once per Deployment labelled `deckwatch.io/application=<app>` | `provisioned_resources` filled; `plugin_outputs` always empty |
-| **Validate** | MCP `validate_plugin` dry run; nothing is applied | Built from the tool's test arguments. deckwatch 0.7.0 loads the plugin (including `metadata()`) first; v0.6.7 doesn't call `metadata()` |
+| **Reconcile** | Every 10 s, once per Deployment labelled `deckwatch.io/application=<app>`, for each application with at least one provisioned resource. v0.6.7 skips applications whose resources have no state or sidecars ([deckwatch#345](https://github.com/alexconrey/deckwatch/pull/345) changed that) | `provisioned_resources` filled; `plugin_outputs` always empty |
+| **Validate** | MCP `validate_plugin` dry run; nothing is applied | Built from the tool's test arguments. deckwatch 0.7.0 loads the plugin (including `metadata()`) first, under the name `__validate__`, with only the tool's `config`: no `allowed_hosts`, so any HTTP request traps the call, and nothing inherited. v0.6.7 doesn't call `metadata()` |
 
 - Every loaded plugin runs on every path, in dependency order. Associating a plugin with an application doesn't limit where it runs.
 - `apply()` is never called for CronJobs, StatefulSets, DaemonSets or Jobs.
@@ -794,15 +800,16 @@ If `apply()` traps or returns invalid JSON, the host logs an error and skips tha
 ### Provisioning
 
 1. **Submit.** An operator submits a resource's form (REST or MCP `provision_resource`). The host:
-   - checks that the plugin is loaded, that it declares `resource_id`, and `singleton`;
+   - checks that the plugin is loaded and declares `resource_id`, and, for a `singleton` resource, that the application doesn't have one yet. Every resource is limited to one per application by a unique index, `singleton` or not, but without `singleton` the duplicate only fails after `provision()` ran and its objects were applied ([deckwatch#336](https://github.com/alexconrey/deckwatch/issues/336));
    - calls `provision()`, applies `kubernetes_resources`, then stores `state`, `deployment_annotations` and `sidecars`.
 
    If `provision()` itself fails, the request fails: HTTP 502 `plugin_failed` with `plugin_events` in deckwatch 0.7.0, and HTTP 400 in v0.6.7. `errors` don't fail it. On success, deckwatch 0.7.0 returns 201 with `plugin_events`.
 2. **Refresh** (REST or MCP `refresh_resource`) calls `provision()` again with the stored `fields`, and replaces the stored values.
 3. **Re-poll:** every 30 s, the host calls `provision()` again for each resource whose stored `state` looks pending (see below). `status` and `retry_after_secs` only matter here. deckwatch 0.7.0 updates the resource's status on every call, even when it doesn't store the result.
 4. **Reconcile:** every 10 s, the stored `state` of all of an application's resources is merged and applied as plain env vars, together with the stored sidecars and annotations, to the application's workloads (field manager `deckwatch-plugin-resources`). On a key collision one resource's value wins, but which one isn't defined.
-5. **Deprovision:** `DELETE` of the resource (REST or MCP `deprovision_resource`) calls `deprovision()` with the stored `state` and `fields`, then deletes the record whatever the outcome. deckwatch 0.7.0 then deletes `delete_kubernetes_resources` and returns `message`, `plugin_events` and the deletion outcomes. Deleting a Deployment or an application does not call `deprovision()`; deleting an application deletes its resource records.
-6. **Field sweep** (deckwatch 0.7.0, [deckwatch#229](https://github.com/alexconrey/deckwatch/pull/229)). On each reconcile tick, deckwatch looks for workloads that no longer belong to an application with resources: the application's last resource was removed, or the workload lost its `deckwatch.io/application` label. It also sweeps on the first cycle after startup.
+5. **Deprovision:** `DELETE` of the resource (REST or MCP `deprovision_resource`) calls `deprovision()` with the stored `state` and `fields`, then deletes the record whatever the outcome. deckwatch 0.7.0 then deletes `delete_kubernetes_resources` and returns `message`, `plugin_events` and the deletion outcomes. If the plugin isn't loaded, deckwatch deletes the record without calling `deprovision()`, and MCP still reports `deprovisioned` ([deckwatch#336](https://github.com/alexconrey/deckwatch/issues/336)). Deleting a Deployment or an application does not call `deprovision()`; deleting an application deletes its resource records.
+6. **Field sweep** (deckwatch 0.7.0, [deckwatch#229](https://github.com/alexconrey/deckwatch/pull/229), [deckwatch#345](https://github.com/alexconrey/deckwatch/pull/345)). On each reconcile tick, deckwatch looks for workloads that no longer belong to an application with resources: the application's last resource was removed, or the workload lost its `deckwatch.io/application` label. It also sweeps on the first cycle after startup.
+   - **Which workloads it touches:** the reconciler stamps every workload it patches with `plugins.deckwatch.io/fields-owner`, a per-database id. The sweep releases a workload only if it carries this database's id or, for fields applied before the stamp existed, if it belongs to an application this database knows. So a new or reset database, or another deckwatch, never strips fields it didn't apply. A database restored from a backup keeps its id, though ([deckwatch#380](https://github.com/alexconrey/deckwatch/issues/380)).
    - **What it releases** on those workloads: everything the reconcile loop applied under field manager `deckwatch-plugin-resources`. That's state env vars, provisioned sidecars with their volumes and mounts, stored annotations (including `deckwatch.io/retry-after-secs`), and `PluginResult` deployment annotations and labels.
    - **What it reports:** a `plugin.fields_released` event, and a `PluginFieldsReleased` Kubernetes Event.
    - **What it leaves alone:** whatever `apply()` injected on create or update, `kubernetes_resources`, and ServiceAccounts.
@@ -827,7 +834,12 @@ So, to be re-polled, put a `<SOMETHING>_STATUS` key with an in-progress value in
 - `default` and `env_source` are display-only (see [`ConfigField`](#configfield); [deckwatch#291](https://github.com/alexconrey/deckwatch/issues/291)).
 - The settings API returns every config value masked as `"configured"`, except keys the schema declares as non-secret.
 - **Provisioning forms** (`PluginResource.fields`) store their values as plain text, `secret` fields included. Don't ask for secrets there.
-- **Event text masking:** deckwatch 0.7.0 masks `secret` settings and file-sourced values in event text, but not values passed through `inherit_env_keys`. Don't echo those in events.
+- **Changing a plugin's code** (deckwatch 0.7.0, [deckwatch#342](https://github.com/alexconrey/deckwatch/pull/342)):
+  - a settings save that changes `source`, or changes or removes `sha256`, is refused with `400` until the plugin's masked config values are re-entered or removed; the error names them;
+  - an upload to a plugin without `sha256` clears those values and returns their keys as `cleared_config_keys`, and an upload to a pinned plugin must match the pin.
+
+  Masked values are every config value except the keys the loaded plugin declares non-secret in `config_schema`. **Declare every non-secret key in `config_schema`,** or operators re-enter it on every upgrade.
+- **Event text masking:** deckwatch 0.7.0 masks `secret` settings, file-sourced values and URL credentials in event text, but not undeclared config keys or values passed through `inherit_env_keys` ([deckwatch#326](https://github.com/alexconrey/deckwatch/issues/326)), and it never masks plugin log lines. Keep secrets out of events and logs.
 
 ### Status, Kubernetes Events and notifications
 
@@ -855,11 +867,19 @@ deckwatch 0.7.0 only; the v0.6.7 release has none of this.
   - Deprovision failures never notify.
 - **What this means for plugins.** An `error` event, or `errors` entry, on a call that otherwise succeeded still turns the target red and notifies. Use `warn` for problems the operator doesn't have to act on.
 
+### Security notes for plugin authors
+
+deckwatch issues that plugin code should allow for. Unless noted, they apply to deckwatch 0.7.0 and v0.6.7:
+- **Annotations and labels are tenant input.** Anyone who can edit a Deployment sets them, and deckwatch runs every plugin on every Deployment. Don't let them pick cloud resource names, policies or roles that a plugin acts on with deckwatch's identity ([deckwatch#306](https://github.com/alexconrey/deckwatch/issues/306)).
+- **Output isn't policy-checked yet.** deckwatch applies a plugin's pod-spec changes, ServiceAccounts and `kubernetes_resources` of any kind, in any namespace ([deckwatch#308](https://github.com/alexconrey/deckwatch/issues/308)). Return only namespaced objects in the application's namespace, so a future policy gate doesn't break the plugin.
+- **Network and resource limits are weak.** `allowed_hosts` doesn't stop redirects ([deckwatch#318](https://github.com/alexconrey/deckwatch/issues/318)), and calls have no time or memory limit ([deckwatch#319](https://github.com/alexconrey/deckwatch/issues/319)).
+- **Text leaves the cluster** (deckwatch 0.7.0). Event text reaches Kubernetes Events (readable by anyone with `get events` in the namespace), notifications, MCP clients and OTLP exports, and log lines aren't scrubbed ([deckwatch#326](https://github.com/alexconrey/deckwatch/issues/326)). Never put secrets in events or logs.
+
 ---
 
 ## Known host issues
 
-These are places where deckwatch's behaviour differs from what its own types or documentation say, as of deckwatch 0.7.0 (`main` at `58ff03c`). Each links to its deckwatch issue. Unless noted, the v0.6.7 release has the same issue. Until they're fixed, plugins should work around them.
+These are places where deckwatch's behaviour differs from what its own types or documentation say, as of deckwatch 0.7.0 (`main` at `604a36f`). Each links to its deckwatch issue. Unless noted, the v0.6.7 release has the same issue. Until they're fixed, plugins should work around them.
 
 1. **`secret` config values reach the plugin encrypted.** ([deckwatch#251](https://github.com/alexconrey/deckwatch/issues/251)) With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
 2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** ([deckwatch#244](https://github.com/alexconrey/deckwatch/issues/244)) They are applied only by reconcile, which only covers applications with at least one provisioned resource.
@@ -869,9 +889,13 @@ These are places where deckwatch's behaviour differs from what its own types or 
 6. **No cleanup of anything injected through `apply()`** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)); see [how results are merged](#how-results-are-merged-create-and-update). In v0.6.7, an application's provisioned env vars, sidecars and annotations also stay after its last resource is removed. deckwatch 0.7.0's field sweep ([deckwatch#229](https://github.com/alexconrey/deckwatch/pull/229)) fixes that part.
 7. **`init_containers` are appended, not prepended** ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), so a plugin's init container runs after the workload's own. Those returned by `provision()` are never stored, so they have no effect.
 8. **No time limit on plugin calls.** ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) deckwatch's docs list a `plugin.timeout` event, but no timeout is configured. A plugin that hangs blocks its caller: the request, or the reconcile loop. So does one waiting on an HTTP server that never answers, because extism has no HTTP timeout of its own (see [the sandbox](#the-sandbox)).
-9. **MCP `provision_resource` drops every field if one value isn't a string.** ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) Pass `key_value` fields as JSON strings there.
+9. **`allowed_hosts` is checked only on the first request.** ([deckwatch#318](https://github.com/alexconrey/deckwatch/issues/318)) extism follows redirects to any host.
+10. **Event text isn't scrubbed of every secret.** ([deckwatch#326](https://github.com/alexconrey/deckwatch/issues/326)) Undeclared config keys, `inherit_env_keys` values and plugin log lines aren't masked.
+11. **A failed duplicate provision leaves untracked objects, and deprovisioning an unloaded plugin reports success.** ([deckwatch#336](https://github.com/alexconrey/deckwatch/issues/336)) See [provisioning](#provisioning).
 
-Fixed in deckwatch 0.7.0, but still in v0.6.7: the deprovision `message` was only logged ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)).
+Fixed in deckwatch 0.7.0, but still in v0.6.7:
+- the deprovision `message` was only logged ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250));
+- MCP `provision_resource` dropped every field when one value wasn't a string ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302), fixed by [deckwatch#298](https://github.com/alexconrey/deckwatch/pull/298)). It now rejects the call.
 
 ---
 
@@ -941,6 +965,8 @@ jobs:
 ```
 
 This assumes your plugin has a `rust-toolchain.toml` with `targets = ["wasm32-unknown-unknown"]` and a committed `Cargo.lock`. Pin actions by commit SHA, as above, and let Dependabot keep them current.
+
+**Upgrading a plugin in deckwatch 0.7.0** changes its `source` (the new tag) and its `sha256`. So the operator has to re-enter every masked config value in that same save, or remove it (see [settings form and secrets](#settings-form-and-secrets)). Declare every non-secret config key in `config_schema` to keep that list to the real secrets, and say in your release notes which settings must be re-entered.
 
 ## Versioning and compatibility
 
