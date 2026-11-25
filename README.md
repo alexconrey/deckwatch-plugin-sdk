@@ -8,7 +8,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
-| Host behaviour documented here | deckwatch `main` at `fc03ec2` (2026-11-24, unreleased; its `Cargo.toml` still says 0.6.7). The v0.6.7 release differs: see [differences in the v0.6.7 release](#differences-in-the-v067-release) |
+| Host behaviour documented here | deckwatch 0.7.0: `main` at `58ff03c` (2026-11-24). Its `Cargo.toml` says 0.7.0, but it isn't tagged yet; the latest release is v0.6.7, which differs a lot. See [differences in the v0.6.7 release](#differences-in-the-v067-release) |
 
 deckwatch keeps its own hand-written copy of these types. Where the two differ, the [type reference](#type-reference) says so.
 
@@ -50,9 +50,16 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
 - **Logging:** three channels.
-  - **Events** (the [event helpers](#reporting-events) `info`, `warn` and `error`). These are the preferred way to report problems. Each helper also copies the event into `errors` or `warnings` (on deprovision, `message`). No deckwatch version reads `events` yet, so for now deckwatch logs only those copies.
-  - **`errors` and `warnings` in the result.** deckwatch logs each at `ERROR` or `WARN` after the export returns, tagged with the plugin's configured name and the namespace and deployment (or application and resource), and counts each error in its `reported_error` metric.
-  - **`extism_pdk::log!`** and the level macros `info!`, `warn!`, `error!`, `debug!` and `trace!`. extism turns each call into a host `tracing` event at the same level, with target `extism::pdk`. The event's only field, `plugin`, is extism's instance id, which changes on every call, so put your plugin's name in the message. deckwatch keeps these events by default since `36e6637` (deckwatch#256, which added `extism::pdk=info` to the default filter). Earlier commits, including `fc03ec2` and the v0.6.7 release, drop them unless `RUST_LOG` includes `extism::pdk`.
+  - **Events** (the [event helpers](#reporting-events) `info`, `warn` and `error`). These are the preferred way to report problems. deckwatch 0.7.0 reads them on every call:
+    - it logs each one once (target `deckwatch::plugin_events`, at the event's own level, with fields `plugin` (the registered name), `export`, `code`, `retryable` and `resource_id`), rate-limited per plugin to bursts of 60, then 1 per second;
+    - it returns them wherever the call has a response;
+    - it records them on the plugin's [status](#status-kubernetes-events-and-notifications).
+
+    Each helper also copies the event into `errors` or `warnings` (on deprovision, `message`) for older hosts, and deckwatch 0.7.0 drops those copies instead of reporting them twice. The v0.6.7 release ignores `events` and logs only the copies.
+  - **`errors` and `warnings` you fill yourself.** deckwatch 0.7.0 turns each one into an event with code `plugin.unspecified`: an error event or a warning event respectively. v0.6.7 logs them at `ERROR` or `WARN`.
+  - **`extism_pdk::log!`** and the level macros `info!`, `warn!`, `error!`, `debug!` and `trace!`. extism turns each call into a host `tracing` event at the same level, with target `extism::pdk` and one field, `plugin`, which holds extism's per-call instance id.
+    - **Attribution:** deckwatch 0.7.0 emits it inside the call's `plugin {export}` span, whose fields include `deckwatch.plugin.name` (the registered name), the namespace, application, Deployment and resource. deckwatch's JSON log output prints the span, so each line can be attributed to its plugin.
+    - **Which deckwatch keeps them:** the default log filter keeps `extism::pdk` since `36e6637` (deckwatch#256). Earlier commits, including the v0.6.7 release, drop these lines unless `RUST_LOG` includes `extism::pdk`.
   - `apply` runs on every 10-second reconcile for applications with provisioned resources, so `info!` lines there repeat constantly. Prefer `debug!` for routine messages. Operators can keep only plugin warnings with `extism::pdk=warn` in `RUST_LOG`.
 - **Configuration:** read values with `extism_pdk::config::get("KEY")`. Keys and values come from the plugin's settings entry, in this order (later entries override earlier ones):
   1. `config` (static key/value pairs, including values saved through the settings form; see [`ConfigField`](#configfield));
@@ -232,7 +239,12 @@ deckwatch itself runs **every** loaded plugin on every Deployment it creates or 
 - results carry structured [events](#pluginevent): a severity, a stable code, a message, and optional details;
 - inputs carry the host's trace context, which the plugin forwards on its own HTTP calls.
 
-The host is meant to do the rest: wrap each plugin call in a span, export it, and send events to the UI, Kubernetes Events and MCP results. **No deckwatch version supports either yet** (checked at `fc03ec2`). It ignores `events`, sends no `trace_context`, and only logs the legacy fields that the helpers below also fill in: `errors`, `warnings`, and the deprovision `message`.
+The host does the rest. **deckwatch 0.7.0** (`main` at `58ff03c`, not yet tagged):
+- wraps each plugin call in a `plugin {export}` span;
+- reads `events` (see [status, Kubernetes Events and notifications](#status-kubernetes-events-and-notifications));
+- fills `trace_context` while it exports OTLP traces.
+
+**The v0.6.7 release supports neither.** It ignores `events`, sends no `trace_context`, and only logs the legacy fields that the helpers below also fill in: `errors`, `warnings`, and the deprovision `message`.
 
 ### Reporting events
 
@@ -269,6 +281,13 @@ fn report(result: &mut PluginResult) {
 - not report the copies twice: drop each `errors` or `warnings` entry that equals the `legacy_text()` of one of the result's events, and turn the remaining entries into events with code `plugin.unspecified`. On a deprovision result, the copies of info and warning events are at the end of `message`, in order, joined with `"; "`;
 - treat event text as untrusted: cap `message` (about 2 KB) and the number of events per call, and strip control characters.
 
+**deckwatch 0.7.0 follows these rules,** and also:
+- **Caps:** `message` at 2048 bytes, `hint` at 512, `code` at 128, and ids and object fields at 253.
+- **Events per call:** it keeps at most 20, host events first, then the most severe.
+- **Malformed events:** it skips one with a `plugin.output_invalid` warning instead of rejecting the whole result.
+- **Text:** it puts event text on one line, and masks secret config values and URL credentials in it.
+- **Codes:** it lowercases them. It rewrites one that starts with `plugin.`, or has no dot, to `<registered-name>.<code>`. It doesn't check that a dotted code's prefix is the plugin's own name.
+
 ### Forwarding the trace
 
 [`PluginContext`](#plugincontext), [`ResourceProvisionRequest`](#resourceprovisionrequest) and [`ResourceDeprovisionRequest`](#resourcedeprovisionrequest) have a `trace_context`: the W3C `traceparent` of the host's span around the call. Their `trace_headers()` method returns `[("traceparent", <trace_context>)]` when the value is a valid version-00 `traceparent`, and nothing otherwise (no context, or a malformed one). Add those headers to every request the plugin makes, so its API calls join the host's trace:
@@ -288,6 +307,8 @@ fn get(ctx: &PluginContext, url: &str) -> FnResult<Vec<u8>> {
 
 `metadata()` takes no input, so it gets no trace context.
 
+**Which deckwatch sends it:** deckwatch 0.7.0 fills `trace_context` on every `apply`, `provision` and `deprovision` call while it exports OTLP traces (`OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set, http/protobuf). Otherwise it leaves the field unset. The v0.6.7 release never sends it.
+
 ### `telemetry` constants
 
 The `deckwatch_plugin_sdk::telemetry` module holds the names that hosts and plugins share.
@@ -304,7 +325,7 @@ The `deckwatch_plugin_sdk::telemetry` module holds the names that hosts and plug
 | `code::CHECKSUM_MISMATCH` | `plugin.checksum_mismatch` | The binary doesn't match the configured `sha256` |
 | `code::LOAD_FAILED` | `plugin.load_failed` | The binary didn't load or instantiate |
 | `code::TRAP` | `plugin.trap` | The plugin trapped (for example, panicked) during a call |
-| `code::TIMEOUT` | `plugin.timeout` | The call ran past the host's time limit |
+| `code::TIMEOUT` | `plugin.timeout` | The call ran past the host's time limit. deckwatch 0.7.0 sets no limit, so it never reports this ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) |
 | `code::OUTPUT_INVALID` | `plugin.output_invalid` | The output isn't valid JSON for the expected type. The message should include the deserializer's error path |
 | `code::K8S_APPLY_FAILED` | `plugin.k8s_apply_failed` | Applying a Kubernetes object the plugin returned failed |
 | `code::POLICY_REJECTED` | `plugin.policy_rejected` | A host policy refused something the plugin asked for |
@@ -319,7 +340,7 @@ How to read the **JSON** column:
 - **default**: a missing key deserializes to the type's default (`""`, `false`, `0`, empty list or map, `None`, or the enum's default variant).
 - **omitted when …**: serialization leaves the key out in that case.
 
-"Host" in descriptions means deckwatch `main` at `fc03ec2`; the [host behaviour](#host-behaviour) section has the details.
+"Host" in descriptions means deckwatch 0.7.0 (`main` at `58ff03c`); the [host behaviour](#host-behaviour) section has the details, including how the v0.6.7 release differs.
 
 ### `PluginMetadata`
 
@@ -327,7 +348,7 @@ Returned by `metadata()`. Derives `Default`.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
-| `name` | `String` | required | Display name for logs and the UI. The MCP tuning block uses it, falling back to the configured name when empty |
+| `name` | `String` | required | Display name. deckwatch uses it only in the MCP tuning block, falling back to the registered name when empty. Logs, events, status and `GET /api/plugins` use the name the plugin is registered under |
 | `version` | `String` | default | Plugin version, e.g. `env!("CARGO_PKG_VERSION")`. Informational; the host never checks it |
 | `description` | `String` | default | Human-readable description |
 | `provides` | `Vec<String>` | default | Capability IDs this plugin provides. Used only for ordering and `depends_on` checks |
@@ -340,7 +361,7 @@ Returned by `metadata()`. Derives `Default`.
 
 - Ordering uses Kahn's algorithm over `provides`, `depends_on` and `optional_depends_on`. Plugins with no edges keep their configured order. If two plugins provide the same capability, the later one in the configured order is the provider. A cycle is logged and its members run in their configured order.
 - Use namespaced capability IDs (`"domain:capability"`). The AWS plugin family uses `"aws:iam-role"`, `"aws:service-account"`, `"aws:rds-connection"` and `"aws:s3-bucket"`.
-- `min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which deckwatch doesn't bump between releases: unreleased `main` at `fc03ec2` still reports 0.6.7. Both the v0.6.7 release and `main` enforce it.
+- **`min_deckwatch_version` compares against deckwatch's own `Cargo.toml` version, which isn't tied to a tag.** `main` at `58ff03c` already reports 0.7.0 even though v0.7.0 isn't released, so `"0.7.0"` loads on a build of that commit and is refused by v0.6.7 ([deckwatch#292](https://github.com/alexconrey/deckwatch/issues/292) proposes bumping the version right after each release). Both enforce it, and deckwatch 0.7.0 also reports a refusal as a `plugin.load_failed` event on the plugin's status.
 
 ### `ConfigField`
 
@@ -376,7 +397,7 @@ Enum, serialized in `snake_case`. Derives `Default` (`String`). `#[non_exhaustiv
 
 | deckwatch | Behaviour |
 |---|---|
-| `main` since `278de71` (2026-11-24; not yet released) | Accepts `key_value` and unknown types (rendered as text inputs). Validates `key_value` values on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string |
+| deckwatch 0.7.0 (`main` since `278de71`; not yet tagged) | Accepts `key_value` and unknown types, rendered as text inputs (a row-per-pair editor is [deckwatch#267](https://github.com/alexconrey/deckwatch/issues/267)). Validates `key_value` settings on save, in the settings form and in MCP `update_plugin_config`; an invalid value rejects the whole save. Over MCP the value may be the JSON object itself or its JSON string. **Provisioning forms** don't validate `key_value` fields, and MCP `provision_resource` drops *every* field if one value isn't a string ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)), so send them as JSON strings there |
 | v0.6.7 release and older | Doesn't know `key_value` or `Unknown`. One unrecognised `field_type` makes the plugin's whole `metadata()` fail to parse, and deckwatch falls back to empty metadata, so the plugin loses **every** config field and resource it declares |
 
 Only use `key_value` in a plugin once the deckwatch installs it targets have a release that includes `278de71`.
@@ -426,7 +447,7 @@ Input to `apply()`. Derives `Default` (*0.10.0*).
 | `labels` | `HashMap<String, String>` | required | The pod template's `spec.template.metadata.labels` |
 | `plugin_outputs` | `HashMap<String, HashMap<String, String>>` | default | `outputs` of plugins that already ran in this invocation, keyed by plugin `name`. Empty on the reconcile path |
 | `provisioned_resources` | `HashMap<String, HashMap<String, String>>` | default | State of every provisioned resource in the application, keyed by `"{plugin_name}/{resource_id}"`. Filled only on the reconcile path; empty on create and update |
-| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call. Forward it with `trace_headers()` (see [forwarding the trace](#forwarding-the-trace)). deckwatch doesn't send it yet (checked at `fc03ec2`) |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call. Forward it with `trace_headers()` (see [forwarding the trace](#forwarding-the-trace)). deckwatch 0.7.0 sends it while exporting OTLP traces; v0.6.7 never does |
 
 On create and update, the context reflects the Deployment after the operator's changes and before any plugin runs.
 
@@ -444,10 +465,10 @@ Output of `apply()`. Derives `Default`; return `PluginResult::default()` to chan
 | `wants_service_account` | `Option<WantsServiceAccount>` | default, omitted when `None` | ServiceAccount for deckwatch to create or patch, and to bind like `service_account_name`. Preferred over a raw ServiceAccount in `kubernetes_resources` |
 | `deployment_annotations` | `HashMap<String, String>` | default | Annotations for the Deployment's `metadata.annotations`. Applied only on the reconcile path |
 | `deployment_labels` | `HashMap<String, String>` | default | Labels for the Deployment's `metadata.labels`. Applied only on the reconcile path |
-| `errors` | `Vec<String>` | default, omitted when empty | Logged at `ERROR`. Never blocks the Deployment |
-| `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
+| `errors` | `Vec<String>` | default, omitted when empty | Never blocks the Deployment. deckwatch 0.7.0 turns each entry that isn't a helper's copy into an error event (`plugin.unspecified`), which marks the plugin **failing** for the Deployment's application. v0.6.7 logs it at `ERROR`. Prefer the [`error` helper](#reporting-events) |
+| `warnings` | `Vec<String>` | default, omitted when empty | Like `errors`, but a warning event, which marks the plugin **degraded**. v0.6.7 logs it at `WARN` |
 | `init_containers` | `Vec<SidecarSpec>` | default, omitted when empty | *0.10.0.* Init containers for the pod. Appended, not prepended (see [how results are merged](#how-results-are-merged-create-and-update)) |
-| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch ignores this field (checked at `fc03ec2`) |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch 0.7.0 reads them (see [status, Kubernetes Events and notifications](#status-kubernetes-events-and-notifications)); v0.6.7 ignores them |
 
 Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`; see [reporting events](#reporting-events).
 
@@ -561,7 +582,7 @@ Input to `provision()`. Derives `Default` (*0.10.0*).
 | `namespace` | `String` | required | The application's namespace |
 | `resource_id` | `String` | required | A `PluginResource.id` from this plugin's metadata |
 | `fields` | `HashMap<String, String>` | required | Form values keyed by `ConfigField.key`. On refresh and re-polls, the values stored at provisioning time |
-| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch doesn't send it yet (checked at `fc03ec2`) |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch 0.7.0 sends it while exporting OTLP traces; v0.6.7 never does |
 
 ### `ResourceProvisionResult`
 
@@ -574,11 +595,11 @@ Output of `provision()`. Derives `Default`.
 | `sidecars` | `Vec<SidecarSpec>` | default | Stored with the resource and applied to the application's Deployments and CronJobs |
 | `init_containers` | `Vec<SidecarSpec>` | default, omitted when empty | *0.10.0.* Meant to be stored and applied like `sidecars`, but deckwatch never stores it, so it has no effect ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)) |
 | `kubernetes_resources` | `Vec<serde_json::Value>` | default | Kubernetes objects to server-side apply, with the same rules as `PluginResult.kubernetes_resources` |
-| `errors` | `Vec<String>` | default | Logged at `ERROR`. Provisioning still succeeds |
-| `warnings` | `Vec<String>` | default, omitted when empty | Logged at `WARN` |
+| `errors` | `Vec<String>` | default | Provisioning still succeeds. deckwatch 0.7.0 turns each entry that isn't a helper's copy into an error event, which marks the resource **failing** (a `PluginProvisionFailed` Kubernetes Event, and a notification on the transition). v0.6.7 logs it at `ERROR` |
+| `warnings` | `Vec<String>` | default, omitted when empty | Like `errors`, but a warning event, which marks the resource **degraded** (`PluginProvisionWarning`). v0.6.7 logs it at `WARN` |
 | `status` | `ProvisioningStatus` | default (`Pending`) | See [provisioning](#provisioning) for exactly what the host does with it |
 | `retry_after_secs` | `Option<u64>` | default, omitted when `None` | Minimum seconds before the host re-polls this resource. Honoured only by the background re-poll |
-| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch ignores this field (checked at `fc03ec2`) |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. Add them with the [helpers](#reporting-events), which also copy them into `errors` and `warnings`. deckwatch 0.7.0 reads them (see [status, Kubernetes Events and notifications](#status-kubernetes-events-and-notifications)); v0.6.7 ignores them |
 
 `errors` is always serialized, unlike `PluginResult.errors`. Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`, as on `PluginResult`.
 
@@ -603,7 +624,7 @@ Input to `deprovision()`. Derives `Default` (*0.10.0*).
 | `resource_id` | `String` | required | The resource's `PluginResource.id` |
 | `state` | `HashMap<String, String>` | default | The stored `state` |
 | `fields` | `HashMap<String, String>` | default | The stored form values |
-| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch doesn't send it yet (checked at `fc03ec2`) |
+| `trace_context` | `Option<String>` | default, omitted when `None` | *0.10.0.* W3C `traceparent` of the host's span around this call; forward it with `trace_headers()`. deckwatch 0.7.0 sends it while exporting OTLP traces; v0.6.7 never does |
 
 ### `ResourceDeprovisionResult`
 
@@ -611,10 +632,10 @@ Output of `deprovision()`. Derives `Default`.
 
 | Field | Type | JSON | Description |
 |---|---|---|---|
-| `errors` | `Vec<String>` | default | Logged at `ERROR`. The record is deleted anyway |
-| `message` | `String` | default | What was and wasn't cleaned up. Logged at `INFO`; the host doesn't show it in the UI |
-| `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. No deckwatch version supports this field yet (checked at `fc03ec2`); hosts ignore it |
-| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. The [helpers](#reporting-events) copy errors into `errors` and every other severity into `message`. deckwatch ignores this field (checked at `fc03ec2`) |
+| `errors` | `Vec<String>` | default | The record is deleted anyway. deckwatch 0.7.0 returns them as events in the DELETE response, with a `PluginDeprovisionFailed` Kubernetes Event; v0.6.7 logs them at `ERROR` |
+| `message` | `String` | default | What was and wasn't cleaned up. deckwatch 0.7.0 returns it in the DELETE response, shows it in the UI, and uses it as the note of the `PluginDeprovisioned` Kubernetes Event. Any part that isn't a helper's copy becomes an info event. v0.6.7 only logs it, at `INFO` |
+| `delete_kubernetes_resources` | `Vec<KubernetesObjectRef>` | default, omitted when empty | *0.10.0.* Kubernetes objects for deckwatch to delete after `deprovision()` returns. deckwatch 0.7.0 deletes them (see [`KubernetesObjectRef`](#kubernetesobjectref)); v0.6.7 ignores the field |
+| `events` | `Vec<PluginEvent>` | default, omitted when empty | *0.10.0.* Structured events. The [helpers](#reporting-events) copy errors into `errors` and every other severity into `message`. deckwatch 0.7.0 returns them in the DELETE response; v0.6.7 ignores them |
 
 Event helpers (*0.10.0*): `info`, `warn`, `error` and `push_event`; see [reporting events](#reporting-events).
 
@@ -636,12 +657,19 @@ Constructors:
 | `KubernetesObjectRef::service_account(name)` | `v1` `ServiceAccount` |
 | `KubernetesObjectRef::job(name)` | `batch/v1` `Job` |
 
-What the SDK specifies for hosts that support the field (none yet; deckwatch ignores it as of `fc03ec2`):
-- Only `v1` `ServiceAccount` and `batch/v1` `Job` are deleted.
-- Jobs are deleted with their pods, and before ServiceAccounts.
-- A ServiceAccount still used by a Deployment, CronJob or Job in the namespace is kept.
-- An object that is already gone counts as deleted.
-- Refusals and failures are logged and audited, and never block removal of the resource record.
+What deckwatch 0.7.0 does with `delete_kubernetes_resources` (the v0.6.7 release ignores the field):
+- **Kinds:** it deletes only `v1` `ServiceAccount` and `batch/v1` `Job`, matched exactly; anything else is refused.
+- **Namespace:** only the application's.
+- **Order:** Jobs first, with background propagation so their pods go too, then ServiceAccounts. deckwatch doesn't wait for the Jobs' pods to finish terminating.
+- **ServiceAccounts it keeps:**
+  - one still used by any Deployment, CronJob or Job in the namespace (not just the application's);
+  - the namespace's `default` ServiceAccount, always.
+- **Validation:** a name that isn't a valid Kubernetes name is refused.
+- **Already gone** counts as deleted.
+- **No ownership check.** deckwatch deletes whatever ServiceAccount or Job you name, so only list objects your plugin created.
+- **Outcomes** come back in the DELETE response as `kubernetes_resource_deletions`, each `deleted`, `not_found`, `refused` or `failed`. Refusals and failures are logged and counted in metrics, but aren't plugin events.
+- **When nothing is deleted:** if `deprovision()` itself failed, or the plugin isn't loaded.
+- **The record** is removed either way.
 
 ### `PluginEvent`
 
@@ -679,21 +707,29 @@ What the SDK specifies for hosts that support the field (none yet; deckwatch ign
 
 ## Host behaviour
 
-This section describes what deckwatch does with plugin output, as read from deckwatch's code on `main` at `fc03ec2` (2026-11-24). That commit is unreleased, and deckwatch's `Cargo.toml` version (0.6.7) is not bumped between releases, so the version number alone doesn't identify the behaviour. None of this is a promise about future versions. Behaviour the host's own documentation contradicts is listed under [known host issues](#known-host-issues).
+This section describes what deckwatch does with plugin output, as read from its code on `main` at `58ff03c` (2026-11-24). That's deckwatch 0.7.0, which isn't tagged yet. The latest release, v0.6.7, behaves differently in many places (see below). None of this is a promise about future versions. Behaviour that contradicts deckwatch's own types or documentation is listed under [known host issues](#known-host-issues).
 
 ### Differences in the v0.6.7 release
 
-The v0.6.7 release (2026-11-06) is about 100 commits older than `fc03ec2`. These differences matter to plugins and the operators who run them:
+The v0.6.7 release (2026-11-06) predates deckwatch's plugin events and tracing work. These differences matter to plugins and the operators who run them:
 
-| Area | v0.6.7 release | `main` at `fc03ec2` |
+| Area | v0.6.7 release | deckwatch 0.7.0 (`main` at `58ff03c`) |
 |---|---|---|
-| `inherit_env_keys` / `inherit_env_file_keys` | **Will pass `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` to a plugin** if configured to | Refuses them (`910e9bb`) |
+| `inherit_env_keys` / `inherit_env_file_keys` | **Will pass `DECKWATCH_ENCRYPTION_KEY` and `DECKWATCH_DATABASE_URL` to a plugin** if configured to | Refuses them (`910e9bb`), and adds a `plugin.policy_rejected` warning to every call while one is configured |
 | `GET /api/settings` (unauthenticated) | **Returns plugin config values unmasked**, secret fields included; saving the plugin page could overwrite stored secrets with the masked placeholder | Masks values as `"configured"` unless the schema declares the key non-secret (`bf332ae`) |
 | `key_value` and unknown `field_type`s | One unknown type fails the whole `metadata()` parse, and the plugin loses all its config fields and resources | Supported; see [`ConfigFieldType`](#configfieldtype) (`278de71`) |
 | MCP tuning settings | `GET /api/plugins` drops `mcp_tuning_fields`, so the settings page never shows a plugin's tuning fields | Shown (`723492c`) |
 | `"upload"` sources | Uploading a plugin unloads every other plugin until the next full reload | Only the uploaded plugin is reloaded (`13a0bfc`) |
+| Plugin events | `events` ignored; `errors` and `warnings` only logged | Read on every call: logged, returned in responses, recorded on a status table, published as Kubernetes Events, sent as notifications (#261, #263, #265, #270) |
+| Tracing | None | Each call runs in a `plugin {export}` span with `deckwatch.plugin.*` attributes; `trace_context` is filled while OTLP traces are exported (#260, #261) |
+| `provision()` call fails | HTTP 400 | HTTP 502, with `plugin_events` |
+| Deprovision response | `204 No Content`; `message` only logged | `200` with `message`, `plugin_events` and `kubernetes_resource_deletions` |
+| `delete_kubernetes_resources` | Ignored | Deleted (#235); see [`KubernetesObjectRef`](#kubernetesobjectref) |
+| An application's last resource is removed | Its env vars, sidecars and annotations stay on the workloads | Released by the field sweep (#229); see [provisioning](#provisioning) |
+| MCP `validate_plugin` | Doesn't call `metadata()` | Loads the plugin first, including `metadata()` and the version check |
+| GitHub sources | Always github.com and raw.githubusercontent.com | Configurable download bases (`endpoints.github_web_base`, `endpoints.github_raw_base`) |
 
-Everything else in this section, and every [known host issue](#known-host-issues), applies to both.
+Everything else in this section applies to both versions, unless it says otherwise. Each [known host issue](#known-host-issues) says which versions have it.
 
 ### When `apply()` runs
 
@@ -701,12 +737,12 @@ Everything else in this section, and every [known host issue](#known-host-issues
 |---|---|---|
 | **Create** | REST `POST /api/namespaces/{ns}/deployments`, before the Deployment is created | `provisioned_resources` empty; `plugin_outputs` chained between plugins |
 | **Update** | REST `PUT /api/namespaces/{ns}/deployments/{name}`, after the operator's edits and before the replace | Same as create |
-| **Reconcile** | Every 10 s, for each application with at least one provisioned resource, once per Deployment labelled `deckwatch.io/application=<app>` | `provisioned_resources` filled; `plugin_outputs` always empty |
-| **Validate** | MCP `validate_plugin` dry run; nothing is applied | Built from the tool's test arguments; `metadata()` is not called |
+| **Reconcile** | Every 10 s, for each application with at least one provisioned resource that has state or sidecars, once per Deployment labelled `deckwatch.io/application=<app>` | `provisioned_resources` filled; `plugin_outputs` always empty |
+| **Validate** | MCP `validate_plugin` dry run; nothing is applied | Built from the tool's test arguments. deckwatch 0.7.0 loads the plugin (including `metadata()`) first; v0.6.7 doesn't call `metadata()` |
 
 - Every loaded plugin runs on every path, in dependency order. Associating a plugin with an application doesn't limit where it runs.
 - `apply()` is never called for CronJobs, StatefulSets, DaemonSets or Jobs.
-- MCP `create_deployment`/`update_deployment` and YAML edits don't run plugins.
+- MCP `create_deployment`/`update_deployment`, YAML edits, application seeding and cloning don't run plugins ([deckwatch#283](https://github.com/alexconrey/deckwatch/issues/283)).
 
 ### Which `PluginResult` fields each path uses
 
@@ -715,10 +751,9 @@ Everything else in this section, and every [known host issue](#known-host-issues
 | `env_vars`, `sidecars`, `init_containers`, `kubernetes_resources`, `service_account_name`, `wants_service_account` | used | ignored |
 | `outputs` | passed to later plugins | ignored |
 | `deployment_annotations`, `deployment_labels` | **ignored** | applied with server-side apply (field manager `deckwatch-plugin-resources`) |
-| `errors`, `warnings` | logged | logged |
-| `events` (*0.10.0*) | ignored | ignored |
+| `events` (*0.10.0*), `errors`, `warnings` | events (0.7.0); `errors` and `warnings` only logged (v0.6.7) | same |
 
-If `apply()` traps or returns invalid JSON, the host logs an error and skips that plugin; the Deployment still goes ahead.
+If `apply()` traps or returns invalid JSON, the host logs an error and skips that plugin; the Deployment still goes ahead. deckwatch 0.7.0 also reports a `plugin.trap` or `plugin.output_invalid` event.
 
 ### How results are merged (create and update)
 
@@ -726,37 +761,56 @@ If `apply()` traps or returns invalid JSON, the host logs an error and skips tha
 - **Sidecars** are appended. A sidecar is skipped if a container with that name exists.
 - **Volumes** from every sidecar's `volumes` are added to the pod, skipping names that already exist. Each sidecar's `primary_volume_mounts` are added to the first container, skipping any with the same name and mount path.
 - **Resources:** the request is `cpu_request`, else `cpu`; the limit is `cpu_limit`, else `cpu`. Memory works the same way. On the reconcile path, provisioned sidecars always get both `requests` and `limits` maps, even when one is empty.
-- **Init containers** are appended to `initContainers`, so they run after the workload's own, and skipped if one with the same name exists. Their `volumes` aren't added to the pod, their `primary_volume_mounts` are ignored, and no tracking annotation is written ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)).
-- **ServiceAccount:** set only when the pod's `serviceAccountName` is unset or `"default"`. When several plugins set one, the first in run order wins. An empty name is not filtered out, so don't return `Some("")`.
-- **`wants_service_account`:** after the Deployment is saved, the host creates or patches the ServiceAccount, adding the IRSA annotation when `irsa_role_arn` is set.
-- **Tracking annotations** on the Deployment's `metadata.annotations`, where `<plugin>` is the configured name:
+- **Init containers** are appended to `initContainers`, so they run after the workload's own, and skipped if one with the same name exists. Their `volumes` aren't added to the pod, their `primary_volume_mounts` are ignored, and no tracking annotation is written ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)). Their `volume_mounts` are applied, so they can mount a volume a sidecar declares.
+- **ServiceAccount:**
+  - Set only when the pod's `serviceAccountName` is unset or `"default"`.
+  - When several plugins set one, the first in run order wins.
+  - deckwatch 0.7.0 reports a `plugin.policy_rejected` warning when it keeps a different, non-default account. So the second of two plugins asking for different accounts shows as degraded, and so does a plugin on a Deployment where the operator chose the account.
+  - An empty name is not filtered out, so don't return `Some("")`.
+- **`wants_service_account`:** after the Deployment is saved, the host creates or patches the ServiceAccount, adding the IRSA annotation when `irsa_role_arn` is set. Failures are only logged.
+- **Tracking annotations** on the Deployment's `metadata.annotations`, where `<plugin>` is the registered name:
   - `deckwatch.plugin-env/<plugin>`: comma-separated names of the env vars injected in this call. Written only if at least one was injected.
   - `deckwatch.plugin-sidecar/<plugin>`: same, for sidecars.
   - `deckwatch.plugin-sa/<plugin>`: the ServiceAccount name that was set.
-- **Nothing is ever removed.** The host doesn't read the tracking annotations back. Disabling a plugin, or a plugin no longer returning something, leaves the injected env vars, sidecars, ServiceAccount and annotations in place.
+- **Nothing injected on create or update is ever removed.** The host doesn't read the tracking annotations back. Disabling a plugin, or a plugin no longer returning something, leaves the injected env vars, sidecars, ServiceAccount and annotations in place ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)).
 
 ### `kubernetes_resources`
 
 - Server-side applied with field manager `deckwatch-plugin` and `force`.
 - The kind must be known to the cluster's API discovery; an uninstalled CRD fails.
 - Without `metadata.namespace` the object is applied cluster-wide, which fails for namespaced kinds. The host does not fill in the namespace.
-- On create and update they are applied in the background after the Deployment is saved, before `wants_service_account`. From `provision()` on submit and refresh, they are applied before the resource record is written; on a re-poll, after it is updated.
-- Failures are logged per object and never fail the request.
+- **When they're applied:**
+  - on create and update, in the background after the Deployment is saved, before `wants_service_account`;
+  - from `provision()` on submit and refresh, before the resource record is written;
+  - on a re-poll, after the record is updated.
+- **Failures** are logged per object and never fail the request. deckwatch 0.7.0 also reports a `plugin.k8s_apply_failed` event per failed object:
+  - in the response, for provision and refresh;
+  - on the application's status, for create, update and re-polls. They aren't in the create/update response, because the objects are applied after it's sent.
 
 ### Provisioning
 
-1. An operator submits a resource's form (REST or MCP `provision_resource`). The host checks that the plugin is loaded, that it declares `resource_id`, and `singleton`. It calls `provision()`, applies `kubernetes_resources`, then stores `state`, `deployment_annotations` and `sidecars`. If `provision()` itself fails, the request fails with HTTP 400. `errors` don't fail it.
-2. **Refresh** (REST or MCP `refresh_resource`) calls `provision()` again with the stored `fields` and replaces the stored values.
-3. **Re-poll:** every 30 s, the host calls `provision()` again for each resource whose stored `state` looks pending (see below). `status` and `retry_after_secs` only matter here.
-4. **Reconcile:** every 10 s, the stored `state` of all of an application's resources is merged (on a key collision, a later resource wins) and applied as plain env vars, together with the stored sidecars and annotations, to the application's workloads (field manager `deckwatch-plugin-resources`).
-5. **Deprovision:** `DELETE` of the resource (REST or MCP `deprovision_resource`) calls `deprovision()` with the stored `state` and `fields`, then deletes the record whatever the outcome. Deleting a Deployment or an application does not call `deprovision()`.
+1. **Submit.** An operator submits a resource's form (REST or MCP `provision_resource`). The host:
+   - checks that the plugin is loaded, that it declares `resource_id`, and `singleton`;
+   - calls `provision()`, applies `kubernetes_resources`, then stores `state`, `deployment_annotations` and `sidecars`.
+
+   If `provision()` itself fails, the request fails: HTTP 502 `plugin_failed` with `plugin_events` in deckwatch 0.7.0, and HTTP 400 in v0.6.7. `errors` don't fail it. On success, deckwatch 0.7.0 returns 201 with `plugin_events`.
+2. **Refresh** (REST or MCP `refresh_resource`) calls `provision()` again with the stored `fields`, and replaces the stored values.
+3. **Re-poll:** every 30 s, the host calls `provision()` again for each resource whose stored `state` looks pending (see below). `status` and `retry_after_secs` only matter here. deckwatch 0.7.0 updates the resource's status on every call, even when it doesn't store the result.
+4. **Reconcile:** every 10 s, the stored `state` of all of an application's resources is merged and applied as plain env vars, together with the stored sidecars and annotations, to the application's workloads (field manager `deckwatch-plugin-resources`). On a key collision one resource's value wins, but which one isn't defined.
+5. **Deprovision:** `DELETE` of the resource (REST or MCP `deprovision_resource`) calls `deprovision()` with the stored `state` and `fields`, then deletes the record whatever the outcome. deckwatch 0.7.0 then deletes `delete_kubernetes_resources` and returns `message`, `plugin_events` and the deletion outcomes. Deleting a Deployment or an application does not call `deprovision()`; deleting an application deletes its resource records.
+6. **Field sweep** (deckwatch 0.7.0, #229). On each reconcile tick, deckwatch looks for workloads that no longer belong to an application with resources: the application's last resource was removed, or the workload lost its `deckwatch.io/application` label. It also sweeps on the first cycle after startup.
+   - **What it releases** on those workloads: everything the reconcile loop applied under field manager `deckwatch-plugin-resources`. That's state env vars, provisioned sidecars with their volumes and mounts, stored annotations (including `deckwatch.io/retry-after-secs`), and `PluginResult` deployment annotations and labels.
+   - **What it reports:** a `plugin.fields_released` event, and a `PluginFieldsReleased` Kubernetes Event.
+   - **What it leaves alone:** whatever `apply()` injected on create or update, `kubernetes_resources`, and ServiceAccounts.
 
 **What makes a resource "pending"** is the stored `state`, not `status`. It is pending if:
 
 - any key ending in `_STATUS` has the value `provisioning`, `creating`, `modifying` or `backing-up`; or
 - it has a `DB_ENGINE` or `DB_STATUS` key and `DB_HOST` is missing or empty.
 
-**How `status` is used on a re-poll:** `Available` and `Failed` results are always stored. A `Pending` result is stored only if it has more `state` keys than before, or no longer looks pending. `Failed` is not stored or shown separately.
+**How `status` is used on a re-poll:**
+- `Available` and `Failed` results are always stored. A `Pending` result is stored only if it has more `state` keys than before, or no longer looks pending.
+- `Failed` is not stored or shown separately. In deckwatch 0.7.0, a `Failed` result with no error events leaves the resource's status healthy.
 
 **`retry_after_secs`** is stored on the resource and makes the re-poll skip it until `updated_at + retry_after_secs` has passed. A refresh clears it.
 
@@ -765,24 +819,50 @@ So, to be re-polled, put a `<SOMETHING>_STATUS` key with an in-progress value in
 ### Settings form and secrets
 
 - Values saved through the settings form are stored in `config` under `ConfigField.key`.
-- `required` is checked by the form only.
-- `default` and `env_source` are display-only (see [`ConfigField`](#configfield)).
+- `required` is checked by the form only ([deckwatch#290](https://github.com/alexconrey/deckwatch/issues/290)).
+- `default` and `env_source` are display-only (see [`ConfigField`](#configfield); [deckwatch#291](https://github.com/alexconrey/deckwatch/issues/291)).
 - The settings API returns every config value masked as `"configured"`, except keys the schema declares as non-secret.
+- **Provisioning forms** (`PluginResource.fields`) store their values as plain text, `secret` fields included. Don't ask for secrets there.
+- **Event text masking:** deckwatch 0.7.0 masks `secret` settings and file-sourced values in event text, but not values passed through `inherit_env_keys`. Don't echo those in events.
+
+### Status, Kubernetes Events and notifications
+
+deckwatch 0.7.0 only; the v0.6.7 release has none of this.
+
+- **Status rows.** Every plugin call's events are recorded on one status row per target:
+  - plugin-wide, for loading and fetching;
+  - per application, for `apply()`;
+  - per provisioned resource.
+
+  A row is **failing** after a failed call or any error event, **degraded** after a warning or `unknown` event, and **healthy** otherwise. Rows keep the last 10 events. The UI shows them as badges and a problems panel on the application page, and in a Problems view.
+- **The `apply()` row** exists only for Deployments labelled `deckwatch.io/application`. On create and update the last Deployment written wins. Each reconcile cycle replaces the row with the worst result across the application's Deployments.
+- **Kubernetes Events** (events.k8s.io, reporting controller `deckwatch`) go on the affected Deployments, or on CronJobs for released fields.
+  - Reasons: `PluginApplyFailed`, `PluginApplyWarning`, `PluginProvisionFailed`, `PluginProvisionWarning`, `PluginProvisioned`, `PluginDeprovisionFailed`, `PluginDeprovisioned`, `PluginFieldsReleased` and `PluginRecovered`.
+  - The note reads `plugin <name> (<resource>): <code>: <message>`, capped at 1 KB.
+  - The same event is published at most every 5 minutes.
+- **Notifications:**
+  - `plugin_failing` is sent when a target turns failing, with the first error's code and message. `plugin_recovered` is sent when it recovers.
+  - A target that fails again within 10 minutes of its last `plugin_failing` sends nothing, and neither does its next recovery.
+  - Deprovision failures never notify.
+- **What this means for plugins.** An `error` event, or `errors` entry, on a call that otherwise succeeded still turns the target red and notifies. Use `warn` for problems the operator doesn't have to act on.
 
 ---
 
 ## Known host issues
 
-These are places where deckwatch's behaviour differs from what its own types or documentation say. All of them exist both in the v0.6.7 release and on `main` at `fc03ec2`. Each links to its deckwatch issue. Until they're fixed, plugins should work around them.
+These are places where deckwatch's behaviour differs from what its own types or documentation say, as of deckwatch 0.7.0 (`main` at `58ff03c`). Each links to its deckwatch issue. Unless noted, the v0.6.7 release has the same issue. Until they're fixed, plugins should work around them.
 
 1. **`secret` config values reach the plugin encrypted.** ([deckwatch#251](https://github.com/alexconrey/deckwatch/issues/251)) With `DECKWATCH_ENCRYPTION_KEY` set, values saved through the settings form for `secret` fields are stored encrypted, and nothing decrypts them before calling the plugin. Values set through MCP `update_plugin_config` are stored in plaintext.
 2. **`PluginResult.deployment_annotations` and `deployment_labels` are ignored on create and update.** ([deckwatch#244](https://github.com/alexconrey/deckwatch/issues/244)) They are applied only by reconcile, which only covers applications with at least one provisioned resource.
 3. **`ProvisioningStatus` doesn't drive re-polling.** ([deckwatch#245](https://github.com/alexconrey/deckwatch/issues/245)) The pending check on `state` does (see [provisioning](#provisioning)). A `Pending` result whose `state` doesn't look pending is never re-polled.
-4. **`retry_after_secs` leaks onto Deployments** ([deckwatch#246](https://github.com/alexconrey/deckwatch/issues/246)) as the annotation `deckwatch.io/retry-after-secs`, because it's stored with the resource's annotations.
+4. **`retry_after_secs` leaks onto Deployments** ([deckwatch#246](https://github.com/alexconrey/deckwatch/issues/246)) as the annotation `deckwatch.io/retry-after-secs`, because it's stored with the resource's annotations. deckwatch 0.7.0's field sweep releases it, along with everything else, once the application has no resources left.
 5. **Provisioned sidecars lose `value_from`.** ([deckwatch#247](https://github.com/alexconrey/deckwatch/issues/247)) On the reconcile path, sidecar env vars are written as `{name, value}` only. `apply()` sidecars keep it.
-6. **No cleanup** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)) of anything injected through `apply()` (see [how results are merged](#how-results-are-merged-create-and-update)). When an application's last resource is deleted, reconcile stops visiting it, so its env vars, sidecars and annotations stay too.
-7. **`ResourceDeprovisionResult.message` isn't shown to the operator.** ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)) It's logged at `INFO`, and the delete request returns `204 No Content`.
-8. **`init_containers` are appended, not prepended** ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), so a plugin's init container runs after the workload's own. Those returned by `provision()` are never stored, so they have no effect.
+6. **No cleanup of anything injected through `apply()`** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)); see [how results are merged](#how-results-are-merged-create-and-update). In v0.6.7, an application's provisioned env vars, sidecars and annotations also stay after its last resource is removed. deckwatch 0.7.0's field sweep (#229) fixes that part.
+7. **`init_containers` are appended, not prepended** ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), so a plugin's init container runs after the workload's own. Those returned by `provision()` are never stored, so they have no effect.
+8. **No time limit on plugin calls.** ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) deckwatch's docs list a `plugin.timeout` event, but no timeout is configured. A plugin that hangs blocks its caller: the request, or the reconcile loop.
+9. **MCP `provision_resource` drops every field if one value isn't a string.** ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) Pass `key_value` fields as JSON strings there.
+
+Fixed in deckwatch 0.7.0, but still in v0.6.7: the deprovision `message` was only logged ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)).
 
 ---
 

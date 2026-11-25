@@ -1,10 +1,9 @@
 //! Names that deckwatch and plugins share for telemetry and plugin events.
 //!
-//! Plugins don't depend on OpenTelemetry; the host traces them. The design
-//! (deckwatch's observability plan) is that deckwatch wraps every plugin call
-//! in a span named `plugin {export}` carrying the [`attribute`] names below,
-//! and extism turns `extism_pdk` log lines into host `tracing` events inside
-//! that span. A plugin's part is to:
+//! Plugins don't depend on OpenTelemetry; the host traces them. deckwatch
+//! wraps every plugin call in a span named `plugin {export}` carrying the
+//! [`attribute`] names below, and extism turns `extism_pdk` log lines into
+//! host `tracing` events inside that span. A plugin's part is to:
 //!
 //! - report problems as [`PluginEvent`](crate::PluginEvent)s, with codes of its
 //!   own (`"<plugin-name>.<code>"`), never the host's [`code`]s;
@@ -13,8 +12,9 @@
 //!   [`ResourceProvisionRequest`](crate::ResourceProvisionRequest::trace_headers)
 //!   and [`ResourceDeprovisionRequest`](crate::ResourceDeprovisionRequest::trace_headers).
 //!
-//! As of deckwatch `fc03ec2` the host side doesn't exist yet: no span, no
-//! `trace_context`, and `events` are ignored.
+//! deckwatch 0.7.0 (`main` at `58ff03c`, not yet tagged) does all of this:
+//! every call runs in that span, `trace_context` is filled while it exports
+//! OTLP traces, and `events` are read. The v0.6.7 release does none of it.
 
 /// Attribute names on the host's span around a plugin call.
 ///
