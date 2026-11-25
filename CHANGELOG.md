@@ -12,12 +12,12 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 ### Documentation
 
-- **Host behaviour now documented for deckwatch 0.7.0** (`main` at `58ff03c`, not yet tagged), which reads plugin `events`, deletes `delete_kubernetes_resources` objects, returns the deprovision `message`, fills `trace_context` while exporting OTLP traces, and releases an application's provisioned fields when its last resource goes:
+- **Host behaviour now documented for deckwatch v0.7.0** (released 2026-11-25), which reads plugin `events`, deletes `delete_kubernetes_resources` objects, returns the deprovision `message`, fills `trace_context` while exporting OTLP traces, and releases an application's provisioned fields when its last resource goes:
   - README: the sandbox's failed calls and logging channels, the events and tracing section, the type reference, "Host behaviour" (with a v0.6.7 comparison and a new "Status, Kubernetes Events and notifications" section), and "Known host issues" (two new: deckwatch#301 and deckwatch#302; deckwatch#250 is fixed);
   - rustdoc in `src/lib.rs` and `src/telemetry.rs`;
   - CLAUDE.md's type table: every SDK type now matches deckwatch's copy field for field.
 - Corrected two older claims: `PluginMetadata.name` isn't used for logs or the UI (only the MCP tuning block), and `wants_service_account` results aren't shown in the UI or audit log.
-- **Host behaviour re-checked against deckwatch `main` at `604a36f`.** Its CHANGELOG dates 0.7.0 2026-11-25, but it isn't tagged yet. Changes since `58ff03c` that affect plugins:
+- **Host behaviour re-checked against the v0.7.0 release** (tag on `5c6fdef`). Changes after the first draft, which described deckwatch `main` at `58ff03c`, that affect plugins:
   - more inherited variables are refused: static AWS credentials and the OTLP exporter's headers (deckwatch#298);
   - MCP `validate_plugin` runs plugins with no network access, git token or inherited values (deckwatch#298);
   - masked config values must be re-entered after a plugin's `source` or `sha256` changes, and an upload to an unpinned plugin clears them (deckwatch#342);

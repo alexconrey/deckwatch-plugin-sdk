@@ -228,8 +228,8 @@ pub fn parse_key_value_field(raw: &str) -> Result<BTreeMap<String, String>, Stri
 ///
 /// ```text
 /// [Plugin: AWS]
-/// RDS Naming Convention: k2-{namespace}-{app}
-/// S3 Bucket Prefix: k2-
+/// RDS Naming Convention: acme-{namespace}-{app}
+/// S3 Bucket Prefix: acme-
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpTuningField {
@@ -1586,14 +1586,14 @@ mod tests {
             key: "rds_naming_convention".into(),
             label: "RDS Naming Convention".into(),
             description: "Convention for naming RDS instances.".into(),
-            placeholder: "k2-{namespace}-{app}".into(),
-            default: Some("k2-{namespace}-{app}".into()),
+            placeholder: "acme-{namespace}-{app}".into(),
+            default: Some("acme-{namespace}-{app}".into()),
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: McpTuningField = serde_json::from_str(&json).unwrap();
         assert_eq!(back.key, "rds_naming_convention");
-        assert_eq!(back.placeholder, "k2-{namespace}-{app}");
-        assert_eq!(back.default.as_deref(), Some("k2-{namespace}-{app}"));
+        assert_eq!(back.placeholder, "acme-{namespace}-{app}");
+        assert_eq!(back.default.as_deref(), Some("acme-{namespace}-{app}"));
     }
 
     #[test]
