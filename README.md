@@ -45,7 +45,7 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
   - HTTP error statuses come back to the plugin as normal responses.
   - **A request that can't be made at all traps the whole export call.** That covers a host not in `allowed_hosts`, an invalid URL, DNS or connection failures, and a response body over 50 MiB (extism's default `max_http_response_bytes`, which deckwatch doesn't change). extism handles these in the host, so the plugin can't catch them; `extism_pdk::http::request`'s `Err` only covers plugin-side problems.
   - **No HTTP timeout of its own.** extism limits a request only to what's left of the call's time limit (the manifest's `timeout_ms`), and running out traps the call. deckwatch sets no limit ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)), so a server that never answers blocks the call indefinitely.
-  - **When a call traps, deckwatch treats it as failed**, and deckwatch 0.7.0 reports an error event for it:
+  - **When a call traps, deckwatch treats it as failed**, and deckwatch 0.7.0 reports a `plugin.trap` error event:
     - `apply` is skipped for that Deployment, which still goes ahead;
     - `provision` stores nothing, and on submit or refresh the request fails: HTTP 502 in deckwatch 0.7.0, HTTP 400 in v0.6.7;
     - after a failed `deprovision`, the resource's record is deleted anyway, but no Kubernetes objects are, since there's no `delete_kubernetes_resources` list to read.
@@ -863,7 +863,7 @@ These are places where deckwatch's behaviour differs from what its own types or 
 5. **Provisioned sidecars lose `value_from`.** ([deckwatch#247](https://github.com/alexconrey/deckwatch/issues/247)) On the reconcile path, sidecar env vars are written as `{name, value}` only. `apply()` sidecars keep it.
 6. **No cleanup of anything injected through `apply()`** ([deckwatch#248](https://github.com/alexconrey/deckwatch/issues/248)); see [how results are merged](#how-results-are-merged-create-and-update). In v0.6.7, an application's provisioned env vars, sidecars and annotations also stay after its last resource is removed. deckwatch 0.7.0's field sweep (#229) fixes that part.
 7. **`init_containers` are appended, not prepended** ([deckwatch#249](https://github.com/alexconrey/deckwatch/issues/249)), so a plugin's init container runs after the workload's own. Those returned by `provision()` are never stored, so they have no effect.
-8. **No time limit on plugin calls.** ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) deckwatch's docs list a `plugin.timeout` event, but no timeout is configured. A plugin that hangs blocks its caller: the request, or the reconcile loop.
+8. **No time limit on plugin calls.** ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) deckwatch's docs list a `plugin.timeout` event, but no timeout is configured. A plugin that hangs blocks its caller: the request, or the reconcile loop. So does one waiting on an HTTP server that never answers, because extism has no HTTP timeout of its own (see [the sandbox](#the-sandbox)).
 9. **MCP `provision_resource` drops every field if one value isn't a string.** ([deckwatch#302](https://github.com/alexconrey/deckwatch/issues/302)) Pass `key_value` fields as JSON strings there.
 
 Fixed in deckwatch 0.7.0, but still in v0.6.7: the deprovision `message` was only logged ([deckwatch#250](https://github.com/alexconrey/deckwatch/issues/250)).
