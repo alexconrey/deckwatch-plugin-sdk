@@ -338,7 +338,7 @@ pub struct PluginResource {
     /// Machine-readable identifier, unique within this plugin. e.g. `"rds"`, `"s3"`.
     pub id: String,
     /// Title of the resource's card on the application's Infrastructure tab,
-    /// and of its provisioning dialog ("Add <label>"). e.g. `"RDS Database"`.
+    /// and of its provisioning dialog (`Add <label>`). e.g. `"RDS Database"`.
     pub label: String,
     /// Optional MDI icon name for the card and the dialog, e.g.
     /// `"mdi-database"`. deckwatch falls back to `mdi-cube-outline`.
