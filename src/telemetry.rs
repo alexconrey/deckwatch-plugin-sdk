@@ -34,8 +34,8 @@ pub mod attribute {
 /// [`PluginEvent::code`](crate::PluginEvent::code) values reserved for the host.
 ///
 /// Every code that starts with [`RESERVED_PREFIX`](code::RESERVED_PREFIX)
-/// belongs to the host, for failures it detects around a plugin call. Plugins
-/// use `"<plugin-name>.<code>"` instead.
+/// belongs to the host, for what it detects or does around plugin calls.
+/// Plugins use `"<plugin-name>.<code>"` instead.
 pub mod code {
     /// The prefix of every host code. Plugins must not use it.
     pub const RESERVED_PREFIX: &str = "plugin.";
@@ -47,9 +47,11 @@ pub mod code {
     pub const FETCH_FAILED: &str = "plugin.fetch_failed";
     /// The fetched binary doesn't match the configured `sha256`.
     pub const CHECKSUM_MISMATCH: &str = "plugin.checksum_mismatch";
-    /// The binary didn't load or instantiate as a plugin.
+    /// The binary didn't load or instantiate as a plugin, or it needs a newer
+    /// host ([`PluginMetadata::min_deckwatch_version`](crate::PluginMetadata::min_deckwatch_version)).
     pub const LOAD_FAILED: &str = "plugin.load_failed";
-    /// The plugin trapped (for example, it panicked) during a call.
+    /// The plugin trapped during a call: for example it panicked, ran out of
+    /// memory, or made an HTTP request that failed in the host.
     pub const TRAP: &str = "plugin.trap";
     /// The call ran past the host's time limit.
     pub const TIMEOUT: &str = "plugin.timeout";
@@ -61,6 +63,10 @@ pub mod code {
     pub const K8S_APPLY_FAILED: &str = "plugin.k8s_apply_failed";
     /// A host policy refused something the plugin asked for.
     pub const POLICY_REJECTED: &str = "plugin.policy_rejected";
+    /// Informational, not a failure: the host released the fields that
+    /// provisioned resources had added to a workload, because its application
+    /// has no provisioned resources left.
+    pub const FIELDS_RELEASED: &str = "plugin.fields_released";
 }
 
 /// The W3C Trace Context HTTP header that carries a `trace_context` value.

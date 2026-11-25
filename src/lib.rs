@@ -2166,6 +2166,7 @@ mod tests {
             (code::OUTPUT_INVALID, "plugin.output_invalid"),
             (code::K8S_APPLY_FAILED, "plugin.k8s_apply_failed"),
             (code::POLICY_REJECTED, "plugin.policy_rejected"),
+            (code::FIELDS_RELEASED, "plugin.fields_released"),
         ];
         for (actual, expected) in codes {
             assert_eq!(actual, expected);

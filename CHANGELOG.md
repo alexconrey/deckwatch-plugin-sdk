@@ -6,6 +6,10 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 ## [0.10.1] - Unreleased
 
+### Added
+
+- `telemetry::code::FIELDS_RELEASED` (`plugin.fields_released`): the host code deckwatch 0.7.0 uses when its field sweep releases a workload's provisioned fields. The SDK's list of reserved codes now matches deckwatch's.
+
 ### Documentation
 
 - **Host behaviour now documented for deckwatch 0.7.0** (`main` at `58ff03c`, not yet tagged), which reads plugin `events`, deletes `delete_kubernetes_resources` objects, returns the deprovision `message`, fills `trace_context` while exporting OTLP traces, and releases an application's provisioned fields when its last resource goes:

@@ -55,7 +55,7 @@ deckwatch copies these types by hand in `src/plugins.rs`. Line refs are at deckw
 | `ResourceDeprovisionRequest` / `ResourceDeprovisionResult` | `deprovision()` input and output, with `trace_context` / `delete_kubernetes_resources` / `events` | `:528` / `:561` |
 | `KubernetesObjectRef` | An object in the application's namespace (API version, kind, name), for `deprovision()` to ask deckwatch to delete or for a `PluginEvent` to point at; constructors `new`, `service_account`, `job` | `:589` |
 | `PluginEvent`, `EventSeverity` | Structured events in the three results' `events`. `info`/`warn`/`error`/`push_event` on each result also copy an event into `errors`, `warnings` or (deprovision) `message`, as `PluginEvent::legacy_text()` (rule 14). `EventSeverity::Unknown` is the catch-all (rule 13) | `:175`, `:156` |
-| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | deckwatch defines its codes in `src/plugin_events.rs` (`:57`–`:87`, including the host-only `plugin.fields_released`) and uses the attribute names in `src/plugins.rs` (`:2025`–`:2027`) |
+| `telemetry` | Span attribute names (`deckwatch.plugin.name`/`.version`/`.export`), the host-reserved event codes (`plugin.*`), `TRACEPARENT_HEADER` | deckwatch defines its ten codes in `src/plugin_events.rs` (`:57`–`:87`), all listed by the SDK, and uses the attribute names in `src/plugins.rs` (`:2025`–`:2027`) |
 | `ProvisioningStatus` | Provisioning state enum, serialized as the variant name (`"Pending"`, not snake_case) on both sides | `:548` |
 
 deckwatch-only host types (`LoadedPlugin`, `ValidationResult`, `PluginCall`, `Trigger`, …) stay in deckwatch.

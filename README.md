@@ -4,7 +4,7 @@ Shared Rust types for [deckwatch](https://github.com/alexconrey/deckwatch) plugi
 
 | | |
 |---|---|
-| SDK version | 0.10.0 ([release notes](https://github.com/alexconrey/deckwatch-plugin-sdk/releases/tag/v0.10.0)). Items added in 0.10.0 are marked *0.10.0* |
+| SDK version | 0.10.0 ([release notes](https://github.com/alexconrey/deckwatch-plugin-sdk/releases/tag/v0.10.0)). Items added in 0.10.0 and later are marked with their version, such as *0.10.0* |
 | Rust | 1.82 or newer (`rust-version`) |
 | Target | `wasm32-unknown-unknown` |
 | Dependencies | `serde`, `serde_json` |
@@ -332,12 +332,13 @@ The `deckwatch_plugin_sdk::telemetry` module holds the names that hosts and plug
 | `code::UNSPECIFIED` | `plugin.unspecified` | A legacy `errors`, `warnings` or `message` string, which has no code |
 | `code::FETCH_FAILED` | `plugin.fetch_failed` | The binary couldn't be fetched |
 | `code::CHECKSUM_MISMATCH` | `plugin.checksum_mismatch` | The binary doesn't match the configured `sha256` |
-| `code::LOAD_FAILED` | `plugin.load_failed` | The binary didn't load or instantiate |
-| `code::TRAP` | `plugin.trap` | The plugin trapped (for example, panicked) during a call |
+| `code::LOAD_FAILED` | `plugin.load_failed` | The binary didn't load or instantiate, or it needs a newer host (`min_deckwatch_version`) |
+| `code::TRAP` | `plugin.trap` | The plugin trapped during a call: it panicked, ran out of memory, or made an HTTP request that failed in the host (see [the sandbox](#the-sandbox)) |
 | `code::TIMEOUT` | `plugin.timeout` | The call ran past the host's time limit. deckwatch 0.7.0 sets no limit, so it never reports this ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)) |
 | `code::OUTPUT_INVALID` | `plugin.output_invalid` | The output isn't valid JSON for the expected type. The message should include the deserializer's error path |
 | `code::K8S_APPLY_FAILED` | `plugin.k8s_apply_failed` | Applying a Kubernetes object the plugin returned failed |
 | `code::POLICY_REJECTED` | `plugin.policy_rejected` | A host policy refused something the plugin asked for |
+| `code::FIELDS_RELEASED` | `plugin.fields_released` | *0.10.1.* Informational: the host released the fields that provisioned resources had added to a workload, because its application has none left (see [provisioning](#provisioning)) |
 
 ---
 
