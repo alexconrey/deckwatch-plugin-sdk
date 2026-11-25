@@ -41,7 +41,12 @@ A plugin exports up to four functions. Each takes JSON input and returns JSON ou
 ### The sandbox
 
 - **No WASI.** There is no filesystem, no environment, no threads, and no system clock.
-- **Network:** only extism's HTTP host function, and only to hosts in the plugin's `allowed_hosts` setting. An empty list leaves extism's default in place, which allows no hosts.
+- **Network:** only extism's HTTP host function (`extism_pdk::http::request`), and only to hosts in the plugin's `allowed_hosts` setting. An empty list leaves extism's default in place, which allows no hosts.
+  - HTTP error statuses come back to the plugin as normal responses.
+  - **A request that can't be made at all traps the whole export call.** That covers a host not in `allowed_hosts`, an invalid URL, DNS or connection failures, and a response body over 50 MiB (extism's default `max_http_response_bytes`, which deckwatch doesn't change). extism handles these in the host, so the plugin can't catch them; `extism_pdk::http::request`'s `Err` only covers plugin-side problems.
+  - **No HTTP timeout of its own.** extism limits a request only to what's left of the call's time limit (the manifest's `timeout_ms`), and running out traps the call. deckwatch sets no limit ([deckwatch#301](https://github.com/alexconrey/deckwatch/issues/301)), so a server that never answers blocks the call indefinitely.
+  - deckwatch then treats the call as failed: `apply` is skipped for that Deployment, `provision` fails with HTTP 400 and nothing is stored, and the `deprovision` record is deleted anyway.
+  - Checked in extism 1.41 (deckwatch's version, `src/pdk.rs`, `http_request`) and with a test plugin. Validate URLs yourself, and put outbound calls only where a failed call is acceptable.
 - **Time:**
   - Call [`deckwatch_plugin_sdk::now()`](#now), which returns Unix seconds from deckwatch's clock. `std::time::SystemTime::now()` panics in `wasm32-unknown-unknown`.
   - Or read the `CURRENT_TIMESTAMP` config key. deckwatch sets it to Unix seconds for `apply`, `provision` and `deprovision`, but **not** for `metadata`.
