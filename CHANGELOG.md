@@ -8,7 +8,7 @@ All notable changes to this crate. The format follows [Keep a Changelog](https:/
 
 ### Documentation
 
-- README, "The sandbox": a request that extism can't make traps the whole export call, and the plugin can't catch it. That covers a host not in `allowed_hosts`, a bad URL, DNS or connection failures, and timeouts. Also what deckwatch does with each export when that happens. Found while building deckwatch-plugin-example's webhook.
+- README, "The sandbox": a request that extism can't make traps the whole export call, and the plugin can't catch it. That covers a host not in `allowed_hosts`, a bad URL, DNS or connection failures, and a response body over 50 MiB. extism has no HTTP timeout of its own, and deckwatch sets no call time limit, so a server that never answers blocks the call. Also what deckwatch does with each export when that happens. Found while building deckwatch-plugin-example's webhook.
 
 ## [0.10.0] - 2026-11-24
 
